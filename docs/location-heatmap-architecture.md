@@ -39,6 +39,16 @@ places-read → marker e superficie di calore
 
 Il refresh coordinato viene eseguito ogni 20 minuti. L'app rilegge luoghi ed eventi con la stessa frequenza mentre resta aperta.
 
+## Politica BestTime
+
+BestTime è una sorgente complementare, non un prerequisito per il funzionamento della mappa:
+
+- massimo **100 venue prioritarie** nel ciclo provider;
+- refresh BestTime al massimo **una volta per ora**; il dato viene riusato dalla pipeline e dall'app nei successivi refresh da 20 minuti;
+- una venue è mostrata come live solo se BestTime restituisce un segnale fresco e disponibile oppure se la telemetria LIVE CITY supera la soglia privacy;
+- se il provider è senza quota, lento o indisponibile, la pipeline continua con telemetria, eventi e modello temporale, etichettando il risultato come stima;
+- prima di aumentare la copertura si esegue un audit di match e disponibilità live: la capacità tecnica del provider non equivale a copertura garantita per ogni luogo.
+
 ## Consenso e privacy
 
 - Nessuna richiesta di posizione all'avvio.

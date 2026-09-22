@@ -56,11 +56,24 @@ Deno.serve(async (request) => {
 
     const baseUrl = requiredEnv("SUPABASE_URL");
     const serviceRoleKey = requiredEnv("SUPABASE_SERVICE_ROLE_KEY");
+    const body = await request.json().catch(() => ({})) as { forceProvider?: boolean };
+    // The pipeline itself runs every 20 minutes, while BestTime live data is
+    // refreshed only once per clock hour. A signed manual caller may force it.
+    const providerRefreshDue = body.forceProvider === true || new Date().getUTCMinutes() < 5;
+    const providerPromise = providerRefreshDue
+      ? callFunction(baseUrl, serviceRoleKey, "crowd-refresh", {
+          dryRun: false,
+          // Product capacity policy: keep live-provider coverage focused on the
+          // highest-priority venues and never exceed 100 in one refresh cycle.
+          limit: 100,
+        })
+      : Promise.resolve({
+          status: 204,
+          ok: true,
+          body: { skipped: true, reason: "BestTime refresh is hourly" },
+        });
     const [provider, telemetry] = await Promise.all([
-      callFunction(baseUrl, serviceRoleKey, "crowd-refresh", {
-        dryRun: false,
-        limit: 4,
-      }),
+      providerPromise,
       callFunction(baseUrl, serviceRoleKey, "crowd-aggregate", {}),
     ]);
 

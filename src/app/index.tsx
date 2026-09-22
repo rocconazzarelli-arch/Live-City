@@ -346,6 +346,12 @@ function heatColor(score: number, alpha: number) {
   return `rgba(63, 174, 98, ${alpha})`;
 }
 
+function heatLabel(hasLiveData: boolean) {
+  return hasLiveData
+    ? 'Affollamento territoriale · live + stime'
+    : 'Affollamento territoriale · stime';
+}
+
 /* =========================================================
    SCREEN
 ========================================================= */
@@ -1091,10 +1097,10 @@ export default function HomeScreen() {
               key={`heat-outer-${cell.id}`}
               center={{ latitude: cell.latitude, longitude: cell.longitude }}
               radius={cell.radius}
-              fillColor={heatColor(cell.score, 0.12)}
-              strokeColor={heatColor(cell.score, 0.04)}
-              strokeWidth={1}
-              zIndex={1}
+              fillColor={heatColor(cell.score, 0.3)}
+              strokeColor={heatColor(cell.score, 0.48)}
+              strokeWidth={2}
+              zIndex={5}
             />
           ))}
 
@@ -1104,9 +1110,9 @@ export default function HomeScreen() {
               key={`heat-inner-${cell.id}`}
               center={{ latitude: cell.latitude, longitude: cell.longitude }}
               radius={cell.radius * 0.48}
-              fillColor={heatColor(cell.score, 0.24)}
+              fillColor={heatColor(cell.score, 0.62)}
               strokeColor="transparent"
-              zIndex={2}
+              zIndex={6}
             />
           ))}
 
@@ -1138,6 +1144,8 @@ export default function HomeScreen() {
                   )
                 }
                 tracksViewChanges={false}
+                opacity={showHeatmap ? 0.72 : 1}
+                zIndex={20}
               >
                 <View
                   style={[
@@ -1510,7 +1518,7 @@ export default function HomeScreen() {
               <View style={[styles.heatLegendDot, styles.heatHigh]} />
             </View>
             <Text style={styles.heatLegendText}>
-              Affollamento · {heatmapHasLiveData ? 'live + stime' : 'stime'}
+              {heatLabel(heatmapHasLiveData)}
             </Text>
           </View>
         )}
@@ -2205,7 +2213,7 @@ const styles =
       paddingHorizontal: 4,
       paddingVertical: 2,
       borderRadius: 3,
-/tmp/live-city-import-300.sql    },
+    },
 
     marker: {
       alignItems:
