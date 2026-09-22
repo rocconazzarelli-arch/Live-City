@@ -1,0 +1,16 @@
+project_id = "qmskozzidachccwbtejd"
+
+[functions.crowd-engine-refresh]
+verify_jwt = false
+
+[functions.places-read]
+verify_jwt = true
+
+[functions.events-read]
+verify_jwt = true
+
+[functions.crowd-pipeline-refresh]
+verify_jwt = false
+
+[functions.places-discover]
+verify_jwt = false
