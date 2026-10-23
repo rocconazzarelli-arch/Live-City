@@ -108,6 +108,7 @@ Documentazione di riferimento:
 
 - [`Crowd Engine V1`](docs/crowd-engine-v1.md)
 - [`Strategia Hybrid`](docs/hybrid-crowd-strategy.md)
+- [`Storico feature e meteo`](docs/feature-history-v1.md)
 - [`Architettura heatmap e geolocalizzazione`](docs/location-heatmap-architecture.md)
 - [`Readiness private beta`](docs/private-beta.md)
 

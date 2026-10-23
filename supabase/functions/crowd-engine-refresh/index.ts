@@ -18,6 +18,7 @@ import {
   type PresenceProfileInput,
   type PresenceSnapshotInput,
 } from "../_shared/crowd-engine.ts";
+import { buildHistoryRows, historyBucketStart } from "../_shared/crowd-history.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -341,6 +342,20 @@ Deno.serve(async (request) => {
       if (estimateUpsertError) throw new Error(`Estimate upsert failed: ${estimateUpsertError.message}`);
     }
 
+    // History feeds the predictive model. A failed write is reported in stats
+    // but does not invalidate the estimates that were already published.
+    const historyRows = buildHistoryRows(estimates, allSignals, historyBucketStart(now));
+    let historyError: string | null = null;
+    if (historyRows.length > 0) {
+      const { error: historyUpsertError } = await supabase
+        .from("crowd_history")
+        .upsert(historyRows, { onConflict: "place_id,bucket_start" });
+      if (historyUpsertError) {
+        historyError = historyUpsertError.message;
+        console.error("CROWD HISTORY WRITE ERROR", { message: historyError });
+      }
+    }
+
     const bestTimeSignals = allSignals.filter((signal) => signal.kind === "besttime");
     const telemetrySignals = allSignals.filter((signal) => signal.kind === "telemetry");
     const mastercardSignals = allSignals.filter((signal) => signal.kind === "mastercard");
@@ -374,6 +389,8 @@ Deno.serve(async (request) => {
       signalsWritten: allSignals.length,
       estimatesWritten: estimateRows.length,
       fallbackEstimates: fallbackEstimates.length,
+      historyRowsWritten: historyError ? 0 : historyRows.length,
+      historyError,
       dominantSources: sourceCounts,
       durationMs: Date.now() - startedAt,
     };

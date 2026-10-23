@@ -30,6 +30,7 @@ presentazionali senza cambiare il contratto degli endpoint.
 | `crowd-refresh` | job | Stime da aree/storico |
 | `mobility-source-refresh` | job | Import mobilità programmata |
 | `hybrid-crowd-refresh` | job | Stime senza BestTime |
+| `weather-ingest` | job | Meteo orario Open-Meteo e backfill storico |
 
 Le funzioni client verificano JWT; i job usano segreti server-side. La
 configurazione è versionata in `supabase/config.toml`.
