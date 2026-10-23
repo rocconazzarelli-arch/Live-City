@@ -9,8 +9,26 @@ verify_jwt = true
 [functions.events-read]
 verify_jwt = true
 
+[functions.events-create]
+verify_jwt = true
+
+[functions.app-health]
+verify_jwt = true
+
 [functions.crowd-pipeline-refresh]
 verify_jwt = false
 
+[functions.crowd-refresh]
+verify_jwt = false
+
 [functions.places-discover]
+verify_jwt = false
+
+[functions.location-ingest]
+verify_jwt = true
+
+[functions.hybrid-crowd-refresh]
+verify_jwt = false
+
+[functions.mobility-source-refresh]
 verify_jwt = false

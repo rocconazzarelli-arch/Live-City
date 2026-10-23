@@ -1,180 +1,184 @@
-import { Image } from 'expo-image';
-import { SymbolView } from 'expo-symbols';
-import { Platform, Pressable, ScrollView, StyleSheet } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { ExternalLink } from '@/components/external-link';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Collapsible } from '@/components/ui/collapsible';
-import { WebBadge } from '@/components/web-badge';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
-import { useTheme } from '@/hooks/use-theme';
+const APP_HEALTH_URL = 'https://qmskozzidachccwbtejd.supabase.co/functions/v1/app-health';
 
-export default function TabTwoScreen() {
-  const safeAreaInsets = useSafeAreaInsets();
-  const insets = {
-    ...safeAreaInsets,
-    bottom: safeAreaInsets.bottom + BottomTabInset + Spacing.three,
+type ProviderRun = {
+  requested_count: number;
+  live_written_count: number;
+  unavailable_count: number;
+  failure_count: number;
+  metadata?: { failureReasons?: Record<string, number> } | null;
+};
+
+type AppHealth = {
+  catalog: { activePlaces: number };
+  crowd: {
+    latestLiveObservationAt: string | null;
+    liveObservationFresh: boolean;
+    latestProviderRun: ProviderRun | null;
   };
-  const theme = useTheme();
+  heatmap: { latestAggregateAt: string | null; aggregateFresh: boolean; privacyThreshold: number };
+};
 
-  const contentPlatformStyle = Platform.select({
-    android: {
-      paddingTop: insets.top,
-      paddingLeft: insets.left,
-      paddingRight: insets.right,
-      paddingBottom: insets.bottom,
-    },
-    web: {
-      paddingTop: Spacing.six,
-      paddingBottom: Spacing.four,
-    },
-  });
+function formatTime(value: string | null) {
+  if (!value) return 'Nessun dato disponibile';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Orario non disponibile';
+  return new Intl.DateTimeFormat('it-IT', {
+    timeZone: 'Europe/Rome', hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short',
+  }).format(date);
+}
+
+function getProviderStatus(health: AppHealth) {
+  const run = health.crowd.latestProviderRun;
+  if (run && run.failure_count > 0) {
+    const reason = Object.keys(run.metadata?.failureReasons ?? {})[0];
+    const suffix = reason ? ` (${reason.replaceAll('_', ' ')})` : '';
+    return `Dati live non disponibili: ${run.failure_count}/${run.requested_count} richieste provider fallite${suffix}`;
+  }
+
+  if (health.crowd.latestLiveObservationAt) {
+    return `Ultima osservazione: ${formatTime(health.crowd.latestLiveObservationAt)}`;
+  }
+
+  return 'Nessuna osservazione live disponibile';
+}
+
+function StatusRow({ icon, title, detail, healthy }: {
+  icon: React.ComponentProps<typeof MaterialCommunityIcons>['name'];
+  title: string;
+  detail: string;
+  healthy: boolean | null;
+}) {
+  const color = healthy === null ? '#9AA2AA' : healthy ? '#1B9B5D' : '#D67B00';
+  return (
+    <View style={styles.statusRow}>
+      <View style={[styles.statusIcon, { backgroundColor: `${color}18` }]}>
+        <MaterialCommunityIcons name={icon} size={20} color={color} />
+      </View>
+      <View style={styles.statusCopy}>
+        <Text style={styles.statusTitle}>{title}</Text>
+        <Text style={styles.statusDetail}>{detail}</Text>
+      </View>
+      <View style={[styles.statusDot, { backgroundColor: color }]} />
+    </View>
+  );
+}
+
+export default function ExploreScreen() {
+  const [health, setHealth] = useState<AppHealth | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [unavailable, setUnavailable] = useState(false);
+
+  const refreshHealth = async () => {
+    const key = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+    if (!key) {
+      setUnavailable(true);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    try {
+      const response = await fetch(APP_HEALTH_URL, {
+        headers: { Authorization: `Bearer ${key}`, apikey: key },
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) throw new Error('Health endpoint unavailable');
+      setHealth(data as AppHealth);
+      setUnavailable(false);
+    } catch {
+      // Informative only: a failed status read must never block the map.
+      setUnavailable(true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    // Defer the first network read until after the initial render. This avoids
+    // a synchronous state transition while React is mounting the screen.
+    const timer = setTimeout(() => { void refreshHealth(); }, 0);
+    return () => clearTimeout(timer);
+  }, []);
 
   return (
-    <ScrollView
-      style={[styles.scrollView, { backgroundColor: theme.background }]}
-      contentInset={insets}
-      contentContainerStyle={[styles.contentContainer, contentPlatformStyle]}>
-      <ThemedView style={styles.container}>
-        <ThemedView style={styles.titleContainer}>
-          <ThemedText type="subtitle">Explore</ThemedText>
-          <ThemedText style={styles.centerText} themeColor="textSecondary">
-            This starter app includes example{'\n'}code to help you get started.
-          </ThemedText>
+    <SafeAreaView style={styles.screen} edges={['top']}>
+      <ScrollView contentContainerStyle={styles.content}>
+        <View style={styles.hero}>
+          <View style={styles.heroIcon}><MaterialCommunityIcons name="city-variant-outline" size={30} color="#FFFFFF" /></View>
+          <View style={styles.heroCopy}>
+            <Text style={styles.title}>Trasparenza dati</Text>
+            <Text style={styles.subtitle}>Stato delle fonti che alimentano LIVE CITY. Le assenze non diventano stime inventate.</Text>
+          </View>
+        </View>
 
-          <ExternalLink href="https://docs.expo.dev" asChild>
-            <Pressable style={({ pressed }) => pressed && styles.pressed}>
-              <ThemedView type="backgroundElement" style={styles.linkButton}>
-                <ThemedText type="link">Expo documentation</ThemedText>
-                <SymbolView
-                  tintColor={theme.text}
-                  name={{ ios: 'arrow.up.right.square', android: 'link', web: 'link' }}
-                  size={12}
-                />
-              </ThemedView>
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Text style={styles.cardTitle}>Stato del servizio</Text>
+            <Pressable accessibilityLabel="Aggiorna stato dei dati" onPress={() => void refreshHealth()} style={styles.refreshButton}>
+              {loading ? <ActivityIndicator size="small" color="#208AEF" /> : <MaterialCommunityIcons name="refresh" size={19} color="#208AEF" />}
             </Pressable>
-          </ExternalLink>
-        </ThemedView>
+          </View>
+          {unavailable ? (
+            <View style={styles.unavailable}>
+              <MaterialCommunityIcons name="cloud-alert-outline" size={22} color="#9A6500" />
+              <View style={styles.statusCopy}>
+                <Text style={styles.statusTitle}>Stato non raggiungibile</Text>
+                <Text style={styles.statusDetail}>La mappa continua a funzionare con gli ultimi dati disponibili.</Text>
+              </View>
+            </View>
+          ) : (
+            <>
+              <StatusRow icon="map-marker-multiple-outline" title="Catalogo luoghi" detail={health ? `${health.catalog.activePlaces} luoghi attivi nel catalogo` : 'Caricamento catalogo'} healthy={health ? health.catalog.activePlaces > 0 : null} />
+              <StatusRow icon="signal-cellular-3" title="Foot traffic live" detail={health ? getProviderStatus(health) : 'Verifica in corso'} healthy={health?.crowd.liveObservationFresh ?? null} />
+              <StatusRow icon="blur" title="Heatmap territoriale" detail={health ? `Ultimo aggregato: ${formatTime(health.heatmap.latestAggregateAt)}` : 'Verifica in corso'} healthy={health?.heatmap.aggregateFresh ?? null} />
+            </>
+          )}
+        </View>
 
-        <ThemedView style={styles.sectionsWrapper}>
-          <Collapsible title="File-based routing">
-            <ThemedText type="small">
-              This app has two screens: <ThemedText type="code">src/app/index.tsx</ThemedText> and{' '}
-              <ThemedText type="code">src/app/explore.tsx</ThemedText>
-            </ThemedText>
-            <ThemedText type="small">
-              The layout file in <ThemedText type="code">src/app/_layout.tsx</ThemedText> sets up
-              the tab navigator.
-            </ThemedText>
-            <ExternalLink href="https://docs.expo.dev/router/introduction">
-              <ThemedText type="linkPrimary">Learn more</ThemedText>
-            </ExternalLink>
-          </Collapsible>
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Come leggere la mappa</Text>
+          <View style={styles.explainerRow}><View style={[styles.legendDot, { backgroundColor: '#1B9B5D' }]} /><Text style={styles.explainer}>Dato live: osservazione BestTime disponibile o presenze LIVE CITY aggregate.</Text></View>
+          <View style={styles.explainerRow}><View style={[styles.legendDot, { backgroundColor: '#D67B00' }]} /><Text style={styles.explainer}>Stima: previsione calcolata esclusivamente da osservazioni reali storicizzate.</Text></View>
+          <View style={styles.explainerRow}><View style={[styles.legendDot, { backgroundColor: '#9AA2AA' }]} /><Text style={styles.explainer}>Non disponibile: non esiste un segnale affidabile da mostrare.</Text></View>
+        </View>
 
-          <Collapsible title="Android, iOS, and web support">
-            <ThemedView type="backgroundElement" style={styles.collapsibleContent}>
-              <ThemedText type="small">
-                You can open this project on Android, iOS, and the web. To open the web version,
-                press <ThemedText type="smallBold">w</ThemedText> in the terminal running this
-                project.
-              </ThemedText>
-              <Image
-                source={require('@/assets/images/tutorial-web.png')}
-                style={styles.imageTutorial}
-              />
-            </ThemedView>
-          </Collapsible>
-
-          <Collapsible title="Images">
-            <ThemedText type="small">
-              For static images, you can use the <ThemedText type="code">@2x</ThemedText> and{' '}
-              <ThemedText type="code">@3x</ThemedText> suffixes to provide files for different
-              screen densities.
-            </ThemedText>
-            <Image source={require('@/assets/images/react-logo.png')} style={styles.imageReact} />
-            <ExternalLink href="https://reactnative.dev/docs/images">
-              <ThemedText type="linkPrimary">Learn more</ThemedText>
-            </ExternalLink>
-          </Collapsible>
-
-          <Collapsible title="Light and dark mode components">
-            <ThemedText type="small">
-              This template has light and dark mode support. The{' '}
-              <ThemedText type="code">useColorScheme()</ThemedText> hook lets you inspect what the
-              user&apos;s current color scheme is, and so you can adjust UI colors accordingly.
-            </ThemedText>
-            <ExternalLink href="https://docs.expo.dev/develop/user-interface/color-themes/">
-              <ThemedText type="linkPrimary">Learn more</ThemedText>
-            </ExternalLink>
-          </Collapsible>
-
-          <Collapsible title="Animations">
-            <ThemedText type="small">
-              This template includes an example of an animated component. The{' '}
-              <ThemedText type="code">src/components/ui/collapsible.tsx</ThemedText> component uses
-              the powerful <ThemedText type="code">react-native-reanimated</ThemedText> library to
-              animate opening this hint.
-            </ThemedText>
-          </Collapsible>
-        </ThemedView>
-        {Platform.OS === 'web' && <WebBadge />}
-      </ThemedView>
-    </ScrollView>
+        <View style={styles.privacyCard}>
+          <MaterialCommunityIcons name="shield-account-outline" size={26} color="#208AEF" />
+          <View style={styles.statusCopy}>
+            <Text style={styles.cardTitle}>La tua posizione resta sotto il tuo controllo</Text>
+            <Text style={styles.explainer}>La condivisione è facoltativa, solo con app aperta. Le zone diventano visibili solo da {health?.heatmap.privacyThreshold ?? 5} sessioni distinte e non mostrano percorsi individuali.</Text>
+          </View>
+        </View>
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  scrollView: {
-    flex: 1,
-  },
-  contentContainer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-  },
-  container: {
-    maxWidth: MaxContentWidth,
-    flexGrow: 1,
-  },
-  titleContainer: {
-    gap: Spacing.three,
-    alignItems: 'center',
-    paddingHorizontal: Spacing.four,
-    paddingVertical: Spacing.six,
-  },
-  centerText: {
-    textAlign: 'center',
-  },
-  pressed: {
-    opacity: 0.7,
-  },
-  linkButton: {
-    flexDirection: 'row',
-    paddingHorizontal: Spacing.four,
-    paddingVertical: Spacing.two,
-    borderRadius: Spacing.five,
-    justifyContent: 'center',
-    gap: Spacing.one,
-    alignItems: 'center',
-  },
-  sectionsWrapper: {
-    gap: Spacing.five,
-    paddingHorizontal: Spacing.four,
-    paddingTop: Spacing.three,
-  },
-  collapsibleContent: {
-    alignItems: 'center',
-  },
-  imageTutorial: {
-    width: '100%',
-    aspectRatio: 296 / 171,
-    borderRadius: Spacing.three,
-    marginTop: Spacing.two,
-  },
-  imageReact: {
-    width: 100,
-    height: 100,
-    alignSelf: 'center',
-  },
+  screen: { flex: 1, backgroundColor: '#F7F8FA' },
+  content: { padding: 20, gap: 14, paddingBottom: 44 },
+  hero: { flexDirection: 'row', gap: 13, alignItems: 'center', marginTop: 8, marginBottom: 2 },
+  heroIcon: { width: 58, height: 58, borderRadius: 20, backgroundColor: '#208AEF', alignItems: 'center', justifyContent: 'center' },
+  heroCopy: { flex: 1 },
+  title: { color: '#121212', fontSize: 26, fontWeight: '800' },
+  subtitle: { color: '#68717B', fontSize: 13, lineHeight: 19, marginTop: 3 },
+  card: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, gap: 13, shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 10, elevation: 2 },
+  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  cardTitle: { color: '#171717', fontSize: 16, fontWeight: '800' },
+  refreshButton: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#EAF5FF', alignItems: 'center', justifyContent: 'center' },
+  statusRow: { flexDirection: 'row', alignItems: 'center', gap: 11 },
+  statusIcon: { width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  statusCopy: { flex: 1 },
+  statusTitle: { color: '#222222', fontSize: 14, fontWeight: '700' },
+  statusDetail: { color: '#727982', fontSize: 12, lineHeight: 17, marginTop: 2 },
+  statusDot: { width: 9, height: 9, borderRadius: 5 },
+  unavailable: { flexDirection: 'row', gap: 11, alignItems: 'center', backgroundColor: '#FFF8E9', borderRadius: 14, padding: 12 },
+  explainerRow: { flexDirection: 'row', gap: 9, alignItems: 'flex-start' },
+  legendDot: { width: 10, height: 10, borderRadius: 5, marginTop: 4 },
+  explainer: { color: '#626B75', fontSize: 13, lineHeight: 19, flex: 1 },
+  privacyCard: { flexDirection: 'row', gap: 12, backgroundColor: '#EAF5FF', borderRadius: 20, padding: 16 },
 });

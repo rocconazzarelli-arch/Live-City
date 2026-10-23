@@ -27,6 +27,18 @@ export default function AppTabs() {
           renderingMode="template"
         />
       </NativeTabs.Trigger>
+
+      <NativeTabs.Trigger name="hybrid">
+        <NativeTabs.Trigger.Label>Hybrid</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon sf="point.3.connected.trianglepath.dotted" />
+      </NativeTabs.Trigger>
+
+      <NativeTabs.Trigger name="social">
+        <NativeTabs.Trigger.Label>Amici</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon
+          sf="person.2"
+        />
+      </NativeTabs.Trigger>
     </NativeTabs>
   );
 }

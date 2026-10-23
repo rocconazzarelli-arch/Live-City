@@ -4,41 +4,43 @@
     "slug": "live-city",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/live-city-icon-bw.png",
     "scheme": "livecity",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "bundleIdentifier": "com.rocconazzarelli.livecity",
+      "buildNumber": "1"
     },
     "android": {
+      "package": "com.rocconazzarelli.livecity",
+      "versionCode": 1,
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "backgroundColor": "#FFFFFF",
+        "foregroundImage": "./assets/images/live-city-icon-bw.png"
       },
       "predictiveBackGestureEnabled": false
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/live-city-icon-bw.png"
     },
     "plugins": [
       "expo-router",
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "LIVE CITY usa la tua posizione mentre l'app è aperta per creare dati anonimi e aggregati sull'affollamento della città."
+          "locationWhenInUsePermission": "Se scegli di contribuire, LIVE CITY usa la posizione solo mentre l'app è aperta per inviare una zona approssimata e anonima utile alla heat map. Puoi interrompere in qualsiasi momento."
         }
       ],
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#208AEF",
-          "image": "./assets/images/splash-icon.png",
-          "imageWidth": 76
+          "backgroundColor": "#FFFFFF",
+          "image": "./assets/images/live-city-splash-bw.png",
+          "imageWidth": 132
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": true,

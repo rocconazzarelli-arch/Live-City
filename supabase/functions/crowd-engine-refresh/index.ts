@@ -3,12 +3,13 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import {
   assignEventsToPlaces,
   buildBestTimeSignal,
+  buildHistoricalSignal,
   buildTelemetrySignal,
-  buildTemporalSignal,
   calculateEstimate,
   type CrowdCacheInput,
   type EngineSignal,
   type EventInput,
+  type HistoricalSlotInput,
   type PlaceCategory,
   type PlaceInput,
   type PresenceProfileInput,
@@ -49,6 +50,20 @@ type PreviousEstimateRow = {
   score: number | null;
   crowd_score: number | null;
 };
+type AreaSnapshotRow = {
+  grid_key: string;
+  window_start: string;
+  window_end: string;
+  distinct_sessions: number;
+  observation_count: number;
+};
+type CommunityEventRow = EventInput & { expected_attendance: number };
+
+const PRIVACY_GRID_SIZE = 0.004;
+
+function privacyGridKey(latitude: number, longitude: number): string {
+  return `${Math.floor(latitude / PRIVACY_GRID_SIZE)}:${Math.floor(longitude / PRIVACY_GRID_SIZE)}`;
+}
 
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -78,7 +93,13 @@ Deno.serve(async (request) => {
     const eventWindowEnd = new Date(now.getTime() + 4 * 60 * 60 * 1000).toISOString();
 
     const telemetryCutoff = new Date(now.getTime() - 40 * 60 * 1000).toISOString();
-    const [placesResult, mappingsResult, eventsResult, previousResult, snapshotsResult, profilesResult] = await Promise.all([
+    const clockParts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Europe/Rome", hour: "numeric", hourCycle: "h23", weekday: "short",
+    }).formatToParts(now);
+    const localHour = Number(clockParts.find((part) => part.type === "hour")?.value ?? 0);
+    const weekdayMap: Record<string, number> = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 };
+    const localWeekday = weekdayMap[clockParts.find((part) => part.type === "weekday")?.value ?? ""] ?? 1;
+    const [placesResult, mappingsResult, eventsResult, communityEventsResult, previousResult, areaSnapshotsResult, profilesResult, historyResult] = await Promise.all([
       supabase
         .from("places")
         .select("id, fsq_place_id, category, latitude, longitude")
@@ -95,28 +116,46 @@ Deno.serve(async (request) => {
         .gte("end_at", now.toISOString())
         .lte("start_at", eventWindowEnd),
       supabase
+        .from("community_events")
+        .select("id, place_id, category, latitude, longitude, start_at, end_at, expected_attendance, is_active")
+        .eq("is_active", true)
+        .gte("end_at", now.toISOString())
+        .lte("start_at", eventWindowEnd),
+      supabase
         .from("crowd_estimates")
         .select("place_id, score, crowd_score"),
+      // Never read raw device observations here. The crowd engine may use
+      // only a published, k-anonymous area snapshot, matched to a place's
+      // coarse privacy cell.
       supabase
-        .from("crowd_snapshots")
-        .select("place_id, window_start, window_end, confirmed_sessions, weighted_presence, average_presence_confidence, telemetry_observations, telemetry_sessions, telemetry_coverage")
+        .from("crowd_area_snapshots")
+        .select("grid_key, window_start, window_end, distinct_sessions, observation_count")
         .gte("window_end", telemetryCutoff)
         .order("window_end", { ascending: false })
         .limit(1000),
       supabase
         .from("crowd_place_profiles")
         .select("place_id, p25_weighted_presence, p50_weighted_presence, p75_weighted_presence, p90_weighted_presence, max_weighted_presence, sample_count, distinct_days, confidence"),
+      supabase
+        .from("crowd_historical_slots")
+        .select("place_id, local_weekday, local_hour, average_score, sample_count, distinct_days, besttime_samples, telemetry_samples")
+        .eq("local_weekday", localWeekday)
+        .eq("local_hour", localHour),
     ]);
 
-    const readError = placesResult.error ?? mappingsResult.error ?? eventsResult.error ?? previousResult.error ?? snapshotsResult.error ?? profilesResult.error;
+    const readError = placesResult.error ?? mappingsResult.error ?? eventsResult.error ?? communityEventsResult.error ?? previousResult.error ?? areaSnapshotsResult.error ?? profilesResult.error ?? historyResult.error;
     if (readError) throw new Error(`Crowd Engine read failed: ${readError.message}`);
 
     const places = (placesResult.data ?? []) as PlaceRow[];
     const mappings = (mappingsResult.data ?? []) as MappingRow[];
-    const events = (eventsResult.data ?? []) as EventInput[];
+    const events = [
+      ...((eventsResult.data ?? []) as EventInput[]).map((event) => ({ ...event, source: "editorial" as const })),
+      ...((communityEventsResult.data ?? []) as CommunityEventRow[]).map((event) => ({ ...event, source: "community" as const })),
+    ];
     const previousEstimates = (previousResult.data ?? []) as PreviousEstimateRow[];
-    const snapshots = (snapshotsResult.data ?? []) as PresenceSnapshotInput[];
+    const areaSnapshots = (areaSnapshotsResult.data ?? []) as AreaSnapshotRow[];
     const profiles = (profilesResult.data ?? []) as PresenceProfileInput[];
+    const historicalSlots = (historyResult.data ?? []) as HistoricalSlotInput[];
     const venueIds = [...new Set(
       mappings
         .map((mapping) => mapping.besttime_venue_id)
@@ -127,7 +166,7 @@ Deno.serve(async (request) => {
     if (venueIds.length > 0) {
       const cacheResult = await supabase
         .from("venue_crowd_cache")
-        .select("besttime_venue_id, crowd_score, confidence, fetched_at, expires_at")
+        .select("besttime_venue_id, crowd_score, confidence, fetched_at, expires_at, observation_mode")
         .in("besttime_venue_id", venueIds);
       if (cacheResult.error) throw new Error(`Crowd cache read failed: ${cacheResult.error.message}`);
       cacheRows = (cacheResult.data ?? []) as CrowdCacheInput[];
@@ -142,17 +181,36 @@ Deno.serve(async (request) => {
     const previousByPlaceId = new Map(
       previousEstimates.map((estimate) => [estimate.place_id, estimate.score ?? estimate.crowd_score]),
     );
+    const latestAreaByGrid = new Map<string, AreaSnapshotRow>();
+    for (const snapshot of areaSnapshots) {
+      if (!latestAreaByGrid.has(snapshot.grid_key)) latestAreaByGrid.set(snapshot.grid_key, snapshot);
+    }
     const snapshotByPlaceId = new Map<number, PresenceSnapshotInput>();
-    for (const snapshot of snapshots) {
-      if (!snapshotByPlaceId.has(snapshot.place_id)) snapshotByPlaceId.set(snapshot.place_id, snapshot);
+    for (const place of places) {
+      const area = latestAreaByGrid.get(privacyGridKey(place.latitude, place.longitude));
+      if (!area) continue;
+      snapshotByPlaceId.set(place.id, {
+        place_id: place.id,
+        window_start: area.window_start,
+        window_end: area.window_end,
+        confirmed_sessions: area.distinct_sessions,
+        // Area-level telemetry is deliberately not presented as a precise
+        // venue visit. Its intensity is the number of distinct sessions in
+        // the same coarse cell, published only when k >= 5.
+        weighted_presence: area.distinct_sessions,
+        average_presence_confidence: 0.7,
+        telemetry_observations: area.observation_count,
+        telemetry_sessions: area.distinct_sessions,
+        telemetry_coverage: 1,
+      });
     }
     const profileByPlaceId = new Map(profiles.map((profile) => [profile.place_id, profile]));
+    const historicalByPlaceId = new Map(historicalSlots.map((slot) => [slot.place_id, slot]));
     const eventSignalsByPlace = assignEventsToPlaces(places, events, now);
     const allSignals: EngineSignal[] = [];
     const estimates = [];
 
     for (const place of places) {
-      const temporalSignal = buildTemporalSignal(place, now);
       const providerVenueId = mappingByFsqId.get(place.fsq_place_id);
       const providerSignal = buildBestTimeSignal(
         place.id,
@@ -165,10 +223,18 @@ Deno.serve(async (request) => {
         profileByPlaceId.get(place.id) ?? null,
         now,
       );
-      const signals = [
-        temporalSignal,
+      const liveSignals = [
         ...(providerSignal ? [providerSignal] : []),
         ...(telemetrySignal ? [telemetrySignal] : []),
+      ];
+      // Predictions are built exclusively from past observed BestTime or
+      // opt-in telemetry data. A generic category/hour fallback is forbidden.
+      const historicalSignal = liveSignals.length === 0
+        ? buildHistoricalSignal(place.id, historicalByPlaceId.get(place.id) ?? null, now)
+        : null;
+      const signals = [
+        ...liveSignals,
+        ...(historicalSignal ? [historicalSignal] : []),
         ...(eventSignalsByPlace.get(place.id) ?? []),
       ];
       allSignals.push(...signals);
@@ -198,7 +264,7 @@ Deno.serve(async (request) => {
       const placeSignals = allSignals.filter((signal) => signal.placeId === estimate.placeId);
       const providerSignal = placeSignals.find((signal) => signal.kind === "besttime");
       const telemetrySignal = placeSignals.find((signal) => signal.kind === "telemetry");
-      const temporalSignal = placeSignals.find((signal) => signal.kind === "temporal");
+      const historicalSignal = placeSignals.find((signal) => signal.kind === "historical");
       return {
         place_id: estimate.placeId,
         estimate_type: "live",
@@ -209,7 +275,7 @@ Deno.serve(async (request) => {
         trend: estimate.trend,
         confidence: estimate.confidence,
         live_signal_score: telemetrySignal?.score ?? providerSignal?.score ?? null,
-        historical_score: temporalSignal?.score ?? null,
+        historical_score: historicalSignal?.score ?? null,
         external_forecast_score: null,
         sample_size: estimate.signalCount,
         dominant_source: estimate.dominantSource,
@@ -232,6 +298,7 @@ Deno.serve(async (request) => {
 
     const bestTimeSignals = allSignals.filter((signal) => signal.kind === "besttime");
     const telemetrySignals = allSignals.filter((signal) => signal.kind === "telemetry");
+    const historicalSignals = allSignals.filter((signal) => signal.kind === "historical");
     const eventSignals = allSignals.filter((signal) => signal.kind === "event");
     const fallbackEstimates = estimates.filter((estimate) => estimate.metadata.isFallback === true);
     const sourceCounts = estimates.reduce<Record<string, number>>((counts, estimate) => {
@@ -246,13 +313,15 @@ Deno.serve(async (request) => {
       bestTimeSignals: bestTimeSignals.length,
       freshBestTimeSignals: bestTimeSignals.filter((signal) => signal.metadata.stale !== true).length,
       staleBestTimeSignals: bestTimeSignals.filter((signal) => signal.metadata.stale === true).length,
-      telemetrySnapshotsRead: snapshots.length,
+      areaSnapshotsRead: areaSnapshots.length,
+      placeTelemetryMatches: snapshotByPlaceId.size,
       telemetrySignals: telemetrySignals.length,
       eventsRead: events.length,
       eventSignals: eventSignals.length,
       directEventSignals: eventSignals.filter((signal) => signal.metadata.match === "direct").length,
       geoEventSignals: eventSignals.filter((signal) => signal.metadata.match === "geo").length,
-      temporalSignals: places.length,
+      historicalSlotsRead: historicalSlots.length,
+      historicalPredictionSignals: historicalSignals.length,
       signalsWritten: allSignals.length,
       estimatesWritten: estimateRows.length,
       fallbackEstimates: fallbackEstimates.length,

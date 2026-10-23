@@ -1,60 +1,123 @@
-# Welcome to your Expo app 👋
+# LIVE CITY
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+LIVE CITY è un’app Expo/React Native per esplorare luoghi, eventi e livelli di
+affollamento a Milano. Il progetto mantiene due strategie di crowd estimation
+separate e confrontabili:
 
-## Get started
+- **BestTime**: provider esterno, telemetria aggregata e storico osservato;
+- **Hybrid**: telemetria LIVE CITY, mobilità programmata, eventi e storico,
+  senza dipendere da BestTime.
 
-1. Install dependencies
+La provenienza del dato è parte del prodotto: una stima o un segnale di
+mobilità non vengono mai presentati come presenza live verificata.
 
-   ```bash
-   npm install
-   ```
+## Stack
 
-2. Start the app
+- Expo SDK 57, React Native 0.86 e Expo Router;
+- TypeScript in modalità strict;
+- `react-native-maps` per mappa, marker e superfici di calore;
+- Supabase Postgres, RLS ed Edge Functions;
+- Deno per i test del Crowd Engine.
 
-   ```bash
-   npx expo start
-   ```
+## Struttura del repository
 
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
-
-```bash
-npm run reset-project
+```text
+src/app/                 route e schermate Expo Router
+src/components/          componenti condivisi e navigazione
+src/features/            codice specifico di una funzionalità
+src/lib/                 client e integrazioni condivise
+supabase/functions/      Edge Functions, una directory per endpoint/job
+supabase/migrations/     schema SQL versionato e policy RLS
+tests/                   test deterministici del Crowd Engine
+docs/                    architettura, privacy e runbook operativi
+assets/                  icone e splash screen versionati
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+Le responsabilità principali sono documentate in
+[`docs/architecture.md`](docs/architecture.md). Le regole di collaborazione
+sono in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-### Other setup steps
+## Configurazione locale
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+Expo SDK 57 richiede Node.js 22.13 o successivo. Clonare il repository in un
+percorso **senza spazi**: alcuni script nativi Xcode/CocoaPods non gestiscono
+correttamente directory come `SECRET PROJECT/live-city code`.
 
-## Learn more
+```bash
+git clone https://github.com/rocconazzarelli-arch/live-city.git live-city
+cd live-city
+npm ci
+cp .env.example .env
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+Configurare in `.env` soltanto valori pubblici destinati al client:
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+```dotenv
+EXPO_PUBLIC_FSQ_API_KEY=...
+EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY=...
+EXPO_PUBLIC_ENABLE_DEMO_HEATMAP=false
+```
 
-## LIVE CITY backend
+Qualunque variabile `EXPO_PUBLIC_*` viene inclusa nel bundle. Chiavi private
+BestTime, service-role Supabase e segreti dei job devono restare nei secret
+Supabase, mai nel client o nel repository.
 
-The versioned Supabase migration and Edge Functions live under `supabase/`. Crowd Engine V1 is documented in [`docs/crowd-engine-v1.md`](docs/crowd-engine-v1.md), including its formula, rollout order, failure behaviour, and current limitations.
+## Avvio
 
-## Join the community
+Per una verifica rapida con Expo Go:
 
-Join our community of developers creating universal apps.
+```bash
+npx expo start --go --lan
+```
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+Per funzionalità native e test su dispositivo usare una development build:
+
+```bash
+npm run ios
+npm run android
+```
+
+La heatmap dimostrativa è disattivata per default e non può essere inclusa in
+una build di produzione. Per abilitarla localmente impostare
+`EXPO_PUBLIC_ENABLE_DEMO_HEATMAP=true`; l’interfaccia la etichetta sempre come
+**SIMULAZIONE — dati non reali**.
+
+## Controlli prima di una pull request
+
+```bash
+npm run check
+```
+
+Il comando esegue TypeScript, ESLint e i test Deno del Crowd Engine. Per una
+verifica aggiuntiva del bundle:
+
+```bash
+npx expo export --platform ios --output-dir /tmp/live-city-ios-export
+```
+
+## Backend e dati
+
+Le migrazioni vanno applicate nell’ordine del timestamp e non devono essere
+modificate dopo la pubblicazione. Il deploy è descritto nel
+[`runbook di rilascio`](docs/production-rollout.md).
+
+Documentazione di riferimento:
+
+- [`Crowd Engine V1`](docs/crowd-engine-v1.md)
+- [`Strategia Hybrid`](docs/hybrid-crowd-strategy.md)
+- [`Architettura heatmap e geolocalizzazione`](docs/location-heatmap-architecture.md)
+- [`Readiness private beta`](docs/private-beta.md)
+
+## Stato dei dati
+
+- **Live verificato**: osservazione provider esplicitamente live oppure cella
+  telemetrica k-anonima e fresca.
+- **Previsione**: storico, eventi o proxy di mobilità, sempre identificati come
+  tali.
+- **Non disponibile**: nessun valore numerico inventato; i marker restano
+  neutri.
+- **Demo**: dataset locale separato, abilitabile solo in sviluppo.
+
+## Licenza
+
+Vedere [`LICENSE`](LICENSE).

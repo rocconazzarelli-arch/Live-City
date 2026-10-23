@@ -4,14 +4,20 @@ import * as Location from 'expo-location';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import MapView, { Circle, Marker } from 'react-native-maps';
 import { SafeAreaView } from 'react-native-safe-area-context';
+
+import { DEMO_AREA_HEAT_CELLS } from '@/features/map/demo-heatmap';
+import { loadSocialSession } from '@/lib/social-client';
 
 /* =========================================================
    TYPES
@@ -27,6 +33,17 @@ type PlaceCategory =
 type CategoryFilter = 'all' | PlaceCategory;
 
 type TimeFilter = 'now' | 'today' | 'week';
+
+type MapDisplayMode = 'places' | 'crowd';
+
+export type CrowdStrategy = 'besttime' | 'hybrid';
+
+type ContributionStatus =
+  | 'idle'
+  | 'starting'
+  | 'active'
+  | 'waiting'
+  | 'error';
 
 type ActivityLevel =
   | 'low'
@@ -49,6 +66,14 @@ type CrowdDataState =
   | 'stale'
   | 'fallback'
   | 'unavailable';
+
+type CrowdForecastPoint = {
+  time: string;
+  score: number;
+  confidence: CrowdConfidence;
+  sampleCount: number;
+  distinctDays: number;
+};
 
 type Place = {
   id: string;
@@ -73,16 +98,37 @@ type Place = {
   crowdIsFallback: boolean;
   crowdDataState: CrowdDataState;
   signalCount: number;
+  crowdForecast: CrowdForecastPoint[];
   catalogSource: string | null;
 };
 
-type HeatCell = {
+type AreaHeatCell = {
   id: string;
   latitude: number;
   longitude: number;
   score: number;
   radius: number;
-  hasLiveSignal: boolean;
+  distinctSessions: number;
+};
+
+type EventForecastCell = {
+  id: string;
+  latitude: number;
+  longitude: number;
+  score: number;
+  radius: number;
+  eventCount: number;
+  expectedAttendance: number;
+};
+
+type MobilityForecastCell = {
+  id: string;
+  latitude: number;
+  longitude: number;
+  score: number;
+  radius: number;
+  serviceIntensity: number;
+  stopCount: number;
 };
 
 type LiveEvent = {
@@ -99,6 +145,8 @@ type LiveEvent = {
   endAt: string;
   source: string;
   isActive: boolean;
+  expectedAttendance: number | null;
+  crowdForecastScore: number | null;
 };
 
 /* =========================================================
@@ -159,8 +207,14 @@ const SUPABASE_PLACES_READ_URL =
 const SUPABASE_EVENTS_READ_URL =
   'https://qmskozzidachccwbtejd.supabase.co/functions/v1/events-read';
 
+const SUPABASE_EVENTS_CREATE_URL =
+  'https://qmskozzidachccwbtejd.supabase.co/functions/v1/events-create';
+
 const SUPABASE_LOCATION_INGEST_URL =
   'https://qmskozzidachccwbtejd.supabase.co/functions/v1/location-ingest';
+
+const SUPABASE_AREA_HEATMAP_READ_URL =
+  'https://qmskozzidachccwbtejd.supabase.co/functions/v1/area-heatmap-read';
 
 /* =========================================================
    MAP
@@ -173,12 +227,14 @@ const MILAN_REGION = {
   longitudeDelta: 0.085,
 };
 
+const DEMO_HEATMAP_ENABLED =
+  __DEV__ && process.env.EXPO_PUBLIC_ENABLE_DEMO_HEATMAP === 'true';
+
 const LOCATION_MIN_SEND_INTERVAL_MS = 5 * 60 * 1000;
-const LOCATION_MIN_DISTANCE_METERS = 100;
 const LOCATION_MAX_ACCURACY_METERS = 250;
-const HEAT_GRID_DEGREES = 0.004;
-const MAX_HEAT_CELLS = 90;
 const CLIENT_REFRESH_INTERVAL_MS = 20 * 60 * 1000;
+const LOCATION_CONSENT_VERSION = '2026-10-private-beta-1';
+const LOCATION_GRID_SIZE = 0.004;
 const MILAN_BOUNDS = {
   south: 45.35,
   north: 45.58,
@@ -190,25 +246,18 @@ const MILAN_BOUNDS = {
    HELPERS
 ========================================================= */
 
-function getMarkerSize(
-  activityLevel: ActivityLevel | null,
-) {
-  switch (activityLevel) {
-    case 'very_high':
-      return 68;
-
-    case 'high':
-      return 50;
-
-    case 'medium':
-      return 36;
-
-    case 'low':
-      return 24;
-
-    default:
-      return 30;
+function getMarkerSize(crowdScore: number | null) {
+  // A continuous scale makes nearby crowd levels legible without letting the
+  // busiest venues dominate the map. Live or forecast scores stay in a more
+  // compact 27–56px range than the previous 24–68px steps.
+  if (crowdScore !== null && Number.isFinite(crowdScore)) {
+    const boundedScore = Math.min(100, Math.max(0, crowdScore));
+    return Math.round(27 + boundedScore * 0.29);
   }
+
+  // Never infer a size from a category or activity label. Without a numeric
+  // crowd observation/forecast the marker must stay visually neutral.
+  return 30;
 }
 
 function getActivityLabel(
@@ -283,17 +332,79 @@ function getCrowdDataLabel(
     return 'Dato non disponibile';
   }
 
-  if (
-    place.crowdIsFallback ||
-    place.crowdDataState ===
-      'fallback' ||
-    place.crowdDataState ===
-      'stale'
-  ) {
-    return 'Stima';
-  }
+  if (place.crowdIsFallback || place.crowdDataState === 'fallback') return 'Previsione';
+
+  if (place.crowdDataState === 'stale') return 'Dato precedente';
 
   return 'Dato live';
+}
+
+function getCrowdProvenance(
+  place: Place,
+) {
+  if (
+    place.crowdScore === null ||
+    place.crowdDataState === 'unavailable'
+  ) {
+    return 'Nessuna osservazione verificata disponibile';
+  }
+
+  if (place.crowdDataState === 'stale') {
+    return place.crowdIsFallback
+      ? 'Previsione precedente: aggiornamento in attesa'
+      : 'Osservazione precedente: aggiornamento in attesa';
+  }
+
+  if (place.crowdSource === 'besttime') {
+    return 'BestTime Live verificato';
+  }
+
+  if (place.crowdSource === 'live_city' || place.crowdSource === 'telemetry') {
+    return 'Presenze LIVE CITY aggregate e anonime';
+  }
+
+  if (place.crowdSource === 'mobility') {
+    return 'Indice di mobilità programmata · non è foot traffic live';
+  }
+
+  if (place.crowdSource === 'event') {
+    return 'Previsione da eventi dichiarati · non è foot traffic live';
+  }
+
+  if (place.crowdSource === 'historical') {
+    return 'Previsione dallo storico della telemetria LIVE CITY';
+  }
+
+  if (
+    place.crowdIsFallback ||
+    place.crowdDataState === 'fallback'
+  ) {
+    return 'Previsione da segnali disponibili, non foot traffic live';
+  }
+
+  return 'Osservazione live verificata';
+}
+
+function getForecastConfidenceLabel(confidence: CrowdConfidence) {
+  if (confidence === 'high') return 'alta confidenza';
+  if (confidence === 'medium') return 'media confidenza';
+  return 'confidenza iniziale';
+}
+
+function formatCrowdUpdatedAt(
+  value: string | null,
+) {
+  if (!value) return 'Orario non disponibile';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Orario non disponibile';
+  return new Intl.DateTimeFormat(
+    'it-IT',
+    {
+      timeZone: 'Europe/Rome',
+      hour: '2-digit',
+      minute: '2-digit',
+    },
+  ).format(date);
 }
 
 function formatEventDateTime(
@@ -322,41 +433,70 @@ function formatEventDateTime(
   ).format(date);
 }
 
-function distanceMeters(
-  from: { latitude: number; longitude: number },
-  to: { latitude: number; longitude: number },
+const HEATMAP_RINGS = [
+  { radiusMultiplier: 1.55, color: '#FFD84A', opacity: 0.16 },
+  { radiusMultiplier: 1.24, color: '#FFB52E', opacity: 0.19 },
+  { radiusMultiplier: 0.96, color: '#FF7A2F', opacity: 0.23 },
+  { radiusMultiplier: 0.68, color: '#F1424E', opacity: 0.28 },
+  { radiusMultiplier: 0.42, color: '#8C4DCE', opacity: 0.32 },
+] as const;
+
+function heatmapRingOpacity(score: number, baseOpacity: number) {
+  // The response contains a privacy-safe 0–100 density score. Keep weaker
+  // areas visible without making them look as intense as crowded ones.
+  return baseOpacity * (0.38 + Math.min(Math.max(score, 0), 100) / 100 * 0.62);
+}
+
+function heatmapRingColor(hex: string, opacity: number) {
+  const value = hex.replace('#', '');
+  const red = Number.parseInt(value.slice(0, 2), 16);
+  const green = Number.parseInt(value.slice(2, 4), 16);
+  const blue = Number.parseInt(value.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${opacity})`;
+}
+
+function privacyGridKey(latitude: number, longitude: number): string {
+  const latitudeCell = Math.floor(latitude / LOCATION_GRID_SIZE);
+  const longitudeCell = Math.floor(longitude / LOCATION_GRID_SIZE);
+  return `${latitudeCell}:${longitudeCell}`;
+}
+
+async function requestJsonWithRetry(
+  url: string,
+  options: RequestInit,
 ) {
-  const radians = (degrees: number) =>
-    (degrees * Math.PI) / 180;
-  const latitudeDelta = radians(to.latitude - from.latitude);
-  const longitudeDelta = radians(to.longitude - from.longitude);
-  const a =
-    Math.sin(latitudeDelta / 2) ** 2 +
-    Math.cos(radians(from.latitude)) *
-      Math.cos(radians(to.latitude)) *
-      Math.sin(longitudeDelta / 2) ** 2;
+  let lastResponse: Response | null = null;
+  let lastData: any = null;
 
-  return 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await fetch(url, options);
+      const raw = await response.text();
+      const data: any = raw ? JSON.parse(raw) : null;
+      if (response.ok) return { response, data };
+      lastResponse = response;
+      lastData = data;
+    } catch {
+      // The map keeps its last successful content during a temporary failure.
+    }
 
-function heatColor(score: number, alpha: number) {
-  if (score >= 75) return `rgba(225, 40, 55, ${alpha})`;
-  if (score >= 55) return `rgba(255, 112, 45, ${alpha})`;
-  if (score >= 35) return `rgba(255, 190, 45, ${alpha})`;
-  return `rgba(63, 174, 98, ${alpha})`;
-}
+    if (attempt === 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 500));
+    }
+  }
 
-function heatLabel(hasLiveData: boolean) {
-  return hasLiveData
-    ? 'Affollamento territoriale · live + stime'
-    : 'Affollamento territoriale · stime';
+  return { response: lastResponse, data: lastData };
 }
 
 /* =========================================================
    SCREEN
 ========================================================= */
 
-export default function HomeScreen() {
+export function LiveCityMapScreen({
+  crowdStrategy = 'besttime',
+}: {
+  crowdStrategy?: CrowdStrategy;
+}) {
   const [places, setPlaces] =
     useState<Place[]>([]);
 
@@ -381,11 +521,53 @@ export default function HomeScreen() {
   const [loadingEvents, setLoadingEvents] =
     useState(true);
 
-  const [showHeatmap, setShowHeatmap] =
-    useState(true);
+  const [placesRefreshUnavailable, setPlacesRefreshUnavailable] =
+    useState(false);
+
+  const [eventsRefreshUnavailable, setEventsRefreshUnavailable] =
+    useState(false);
+
+  const [mapDisplayMode, setMapDisplayMode] =
+    useState<MapDisplayMode>(DEMO_HEATMAP_ENABLED ? 'crowd' : 'places');
+
+  const [areaHeatCells, setAreaHeatCells] =
+    useState<AreaHeatCell[]>([]);
+
+  const [eventForecastCells, setEventForecastCells] =
+    useState<EventForecastCell[]>([]);
+
+  const [mobilityForecastCells, setMobilityForecastCells] =
+    useState<MobilityForecastCell[]>([]);
+
+  const [eventComposerOpen, setEventComposerOpen] =
+    useState(false);
+
+  const [eventTitle, setEventTitle] =
+    useState('');
+
+  const [eventDescription, setEventDescription] =
+    useState('');
+
+  const [eventCategory, setEventCategory] =
+    useState<PlaceCategory>('nightlife');
+
+  const [eventAttendance, setEventAttendance] =
+    useState('30');
+
+  const [eventZone, setEventZone] =
+    useState({ latitude: MILAN_REGION.latitude, longitude: MILAN_REGION.longitude });
+
+  const [creatingEvent, setCreatingEvent] =
+    useState(false);
 
   const [contributionEnabled, setContributionEnabled] =
     useState(false);
+
+  const [contributionStatus, setContributionStatus] =
+    useState<ContributionStatus>('idle');
+
+  const [lastContributionAt, setLastContributionAt] =
+    useState<string | null>(null);
 
   const locationSubscriptionRef =
     useRef<Location.LocationSubscription | null>(null);
@@ -393,12 +575,7 @@ export default function HomeScreen() {
   const locationSessionIdRef =
     useRef<string | null>(null);
 
-  const lastSentLocationRef =
-    useRef<{
-      latitude: number;
-      longitude: number;
-      sentAt: number;
-    } | null>(null);
+  const lastSentLocationRef = useRef<{ gridKey: string; sentAt: number } | null>(null);
 
   const loading =
     loadingPlaces ||
@@ -419,73 +596,27 @@ export default function HomeScreen() {
           process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 
         if (!supabaseKey) {
-          console.error(
-            'Supabase publishable key non trovata',
-          );
+          if (!cancelled) setPlacesRefreshUnavailable(true);
 
           return;
         }
 
-        console.log(
-          'PLACES READ: lettura catalogo da Supabase...',
-        );
-
-        const response =
-          await fetch(
-            SUPABASE_PLACES_READ_URL,
-            {
-              method: 'GET',
-
-              headers: {
-                Authorization:
-                  `Bearer ${supabaseKey}`,
-
-                apikey:
-                  supabaseKey,
-              },
-            },
-          );
-
-        const data =
-          await response.json();
-
-        console.log(
-          'PLACES READ STATS:',
+        const placesReadUrl = crowdStrategy === 'hybrid'
+          ? `${SUPABASE_PLACES_READ_URL}?strategy=hybrid`
+          : SUPABASE_PLACES_READ_URL;
+        const { response, data } = await requestJsonWithRetry(
+          placesReadUrl,
           {
-            count:
-              data.count,
-
-            matchedCount:
-              data.matchedCount,
-
-            availableCrowdCount:
-              data.availableCrowdCount,
-
-            liveEstimateCount:
-              data.liveEstimateCount,
-
-            forecastEstimateCount:
-              data.forecastEstimateCount,
-
-            unavailableCrowdCount:
-              data.unavailableCrowdCount,
+            method: 'GET',
+            headers: { Authorization: `Bearer ${supabaseKey}`, apikey: supabaseKey },
           },
         );
 
         if (
-          !response.ok ||
-          !data.success
+          !response ||
+          !data?.success
         ) {
-          console.error(
-            'PLACES READ ERROR:',
-            {
-              status:
-                response.status,
-
-              response:
-                data,
-            },
-          );
+          if (!cancelled) setPlacesRefreshUnavailable(true);
 
           return;
         }
@@ -517,6 +648,13 @@ export default function HomeScreen() {
               crowdIsFallback?: boolean;
               crowdDataState?: CrowdDataState;
               signalCount?: number;
+              crowdForecast?: {
+                time: string;
+                score: number;
+                confidence: CrowdConfidence;
+                sampleCount: number;
+                distinctDays: number;
+              }[];
               catalogSource?: string | null;
             }) => ({
               id:
@@ -602,6 +740,14 @@ export default function HomeScreen() {
                 place.signalCount ??
                 0,
 
+              crowdForecast:
+                (place.crowdForecast ?? []).filter(
+                  (forecast) =>
+                    Number.isFinite(forecast.score) &&
+                    forecast.score >= 0 &&
+                    forecast.score <= 100,
+                ),
+
               catalogSource:
                 place.catalogSource ??
                 null,
@@ -615,25 +761,10 @@ export default function HomeScreen() {
         setPlaces(
           loadedPlaces,
         );
-
-        console.log(
-          `PLACES READ COMPLETATO: ${loadedPlaces.length} places`,
-        );
-
-        console.log(
-          'CROWD AVAILABLE IN APP:',
-          loadedPlaces.filter(
-            (place) =>
-              place.crowdScore !==
-              null,
-          ).length,
-        );
-      } catch (error) {
+        setPlacesRefreshUnavailable(false);
+      } catch {
         if (!cancelled) {
-          console.error(
-            'PLACES READ ERROR:',
-            error,
-          );
+          setPlacesRefreshUnavailable(true);
         }
       } finally {
         if (!cancelled) {
@@ -652,7 +783,7 @@ export default function HomeScreen() {
       cancelled = true;
       clearInterval(refreshInterval);
     };
-  }, []);
+  }, [crowdStrategy]);
 
   /* =======================================================
      LOAD EVENTS
@@ -669,72 +800,33 @@ export default function HomeScreen() {
           process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 
         if (!supabaseKey) {
-          console.error(
-            'Supabase publishable key non trovata',
-          );
+          if (!cancelled) setEventsRefreshUnavailable(true);
 
           return;
         }
 
-        console.log(
-          'EVENTS READ: caricamento eventi...',
+        const { response, data } = await requestJsonWithRetry(
+          SUPABASE_EVENTS_READ_URL,
           {
-            window:
-              selectedTime,
-
-            category:
-              selectedCategory,
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${supabaseKey}`,
+              apikey: supabaseKey,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              window: selectedTime,
+              category: selectedCategory,
+              limit: 100,
+            }),
           },
         );
 
-        const response =
-          await fetch(
-            SUPABASE_EVENTS_READ_URL,
-            {
-              method: 'POST',
-
-              headers: {
-                Authorization:
-                  `Bearer ${supabaseKey}`,
-
-                apikey:
-                  supabaseKey,
-
-                'Content-Type':
-                  'application/json',
-              },
-
-              body:
-                JSON.stringify({
-                  window:
-                    selectedTime,
-
-                  category:
-                    selectedCategory,
-
-                  limit:
-                    100,
-                }),
-            },
-          );
-
-        const data =
-          await response.json();
-
         if (
-          !response.ok ||
-          !data.ok
+          !response ||
+          !data?.ok
         ) {
-          console.error(
-            'EVENTS READ ERROR:',
-            {
-              status:
-                response.status,
-
-              response:
-                data,
-            },
-          );
+          if (!cancelled) setEventsRefreshUnavailable(true);
 
           return;
         }
@@ -755,6 +847,8 @@ export default function HomeScreen() {
               end_at: string;
               source: string;
               is_active: boolean;
+              expected_attendance?: number | null;
+              crowd_forecast_score?: number | null;
             }) => ({
               id:
                 String(
@@ -801,6 +895,16 @@ export default function HomeScreen() {
 
               isActive:
                 event.is_active,
+
+              expectedAttendance:
+                typeof event.expected_attendance === 'number'
+                  ? event.expected_attendance
+                  : null,
+
+              crowdForecastScore:
+                typeof event.crowd_forecast_score === 'number'
+                  ? event.crowd_forecast_score
+                  : null,
             }),
           );
 
@@ -811,26 +915,10 @@ export default function HomeScreen() {
         setEvents(
           loadedEvents,
         );
-
-        console.log(
-          'EVENTS READ COMPLETATO:',
-          {
-            count:
-              loadedEvents.length,
-
-            window:
-              selectedTime,
-
-            category:
-              selectedCategory,
-          },
-        );
-      } catch (error) {
+        setEventsRefreshUnavailable(false);
+      } catch {
         if (!cancelled) {
-          console.error(
-            'EVENTS READ ERROR:',
-            error,
-          );
+          setEventsRefreshUnavailable(true);
         }
       } finally {
         if (!cancelled) {
@@ -858,74 +946,155 @@ export default function HomeScreen() {
      FILTERED PLACES
   ======================================================= */
 
-  const filteredPlaces =
-    useMemo(() => {
-      if (
-        selectedCategory ===
-        'all'
-      ) {
-        return places;
-      }
+  const filteredPlaces = useMemo(() => {
+    const rank = (place: Place) => {
+      const sourceWeight =
+        place.crowdDataState === 'fresh' && !place.crowdIsFallback
+          ? 4
+          : place.crowdDataState === 'stale'
+            ? 3
+            : place.crowdDataState === 'fallback'
+              ? 2
+              : 1;
+      const confidenceWeight = place.confidence === 'high' ? 3 : place.confidence === 'medium' ? 2 : 1;
+      return sourceWeight * 1000 + confidenceWeight * 100 + (place.crowdScore ?? 0);
+    };
 
-      return places.filter(
-        (place) =>
-          place.category ===
-          selectedCategory,
-      );
-  }, [
-    places,
-    selectedCategory,
-  ]);
+    const topThirty = (category: PlaceCategory) => places
+      .filter((place) => place.category === category)
+      .sort((left, right) => rank(right) - rank(left) || left.name.localeCompare(right.name))
+      .slice(0, 30);
 
-  const heatCells = useMemo<HeatCell[]>(() => {
-    const cells = new Map<
-      string,
-      {
-        latitudeTotal: number;
-        longitudeTotal: number;
-        scoreTotal: number;
-        count: number;
-        hasLiveSignal: boolean;
-      }
-    >();
+    if (selectedCategory !== 'all') return topThirty(selectedCategory);
+    return (Object.keys(categoryConfig) as PlaceCategory[]).flatMap(topThirty);
+  }, [places, selectedCategory]);
 
-    for (const place of filteredPlaces) {
-      if (place.crowdScore === null) continue;
-      const latitudeKey = Math.round(place.latitude / HEAT_GRID_DEGREES);
-      const longitudeKey = Math.round(place.longitude / HEAT_GRID_DEGREES);
-      const id = `${latitudeKey}:${longitudeKey}`;
-      const cell = cells.get(id) ?? {
-        latitudeTotal: 0,
-        longitudeTotal: 0,
-        scoreTotal: 0,
-        count: 0,
-        hasLiveSignal: false,
-      };
-      cell.latitudeTotal += place.latitude;
-      cell.longitudeTotal += place.longitude;
-      cell.scoreTotal += place.crowdScore;
-      cell.count += 1;
-      cell.hasLiveSignal ||=
-        place.crowdDataState === 'fresh' && !place.crowdIsFallback;
-      cells.set(id, cell);
-    }
-
-    return [...cells.entries()]
-      .map(([id, cell]) => ({
-        id,
-        latitude: cell.latitudeTotal / cell.count,
-        longitude: cell.longitudeTotal / cell.count,
-        score: Math.round(cell.scoreTotal / cell.count),
-        radius: Math.min(430, 190 + cell.count * 45),
-        hasLiveSignal: cell.hasLiveSignal,
-      }))
-      .sort((left, right) => right.score - left.score)
-      .slice(0, MAX_HEAT_CELLS);
-  }, [filteredPlaces]);
-
-  const heatmapHasLiveData = heatCells.some(
-    (cell) => cell.hasLiveSignal,
+  const hasLiveAreaHeatmap = areaHeatCells.length > 0;
+  const hasEventAreaForecast = eventForecastCells.length > 0;
+  const hasMobilityAreaForecast = mobilityForecastCells.length > 0;
+  const displayedAreaHeatCells = DEMO_HEATMAP_ENABLED
+    ? DEMO_AREA_HEAT_CELLS
+    : areaHeatCells;
+  const showHeatmap = mapDisplayMode === 'crowd';
+  const showPlaceMarkers = mapDisplayMode === 'places';
+  const hasVisibleCrowdScore = filteredPlaces.some((place) =>
+    place.crowdScore !== null && Number.isFinite(place.crowdScore),
   );
+  const showCrowdUnavailableNotice =
+    !loading &&
+    showPlaceMarkers &&
+    filteredPlaces.length > 0 &&
+    !hasVisibleCrowdScore;
+
+  const heatmapLabel =
+    DEMO_HEATMAP_ENABLED
+      ? `SIMULAZIONE · ${DEMO_AREA_HEAT_CELLS.length} hotspot dimostrativi · dati non reali`
+      : placesRefreshUnavailable
+      ? places.length > 0
+        ? 'Aggiornamento luoghi temporaneamente non disponibile'
+        : 'Catalogo luoghi temporaneamente non disponibile'
+      : eventsRefreshUnavailable
+        ? 'Eventi temporaneamente non disponibili'
+        : hasLiveAreaHeatmap
+          ? `Heat map live · ${areaHeatCells.length} zone aggregate${hasMobilityAreaForecast ? ` · ${mobilityForecastCells.length} mobilità` : ''}${hasEventAreaForecast ? ` · ${eventForecastCells.length} eventi` : ''}`
+          : hasMobilityAreaForecast
+            ? `Mobilità programmata · ${mobilityForecastCells.length} zone${hasEventAreaForecast ? ` · ${eventForecastCells.length} eventi` : ''}`
+          : hasEventAreaForecast
+            ? `Previsioni evento · ${eventForecastCells.length} zone dichiarate`
+          : 'Nessuna presenza live verificata';
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadAreaHeatmap = async () => {
+      const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+      if (!supabaseKey) return;
+
+      try {
+        const heatmapReadUrl = crowdStrategy === 'hybrid'
+          ? `${SUPABASE_AREA_HEATMAP_READ_URL}?strategy=hybrid`
+          : SUPABASE_AREA_HEATMAP_READ_URL;
+        const response = await fetch(heatmapReadUrl, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${supabaseKey}`,
+            apikey: supabaseKey,
+          },
+        });
+        const data = await response.json();
+        if (!response.ok || !data.success || cancelled) return;
+
+        setAreaHeatCells(
+          (data.cells ?? []).map((cell: {
+            id: string;
+            latitude: number;
+            longitude: number;
+            score: number;
+            radius: number;
+            distinctSessions: number;
+          }) => ({
+            id: cell.id,
+            latitude: cell.latitude,
+            longitude: cell.longitude,
+            score: cell.score,
+            radius: cell.radius,
+            distinctSessions: cell.distinctSessions,
+          })),
+        );
+        setEventForecastCells(
+          (data.eventForecastCells ?? []).map((cell: {
+            id: string;
+            latitude: number;
+            longitude: number;
+            score: number;
+            radius: number;
+            eventCount: number;
+            expectedAttendance: number;
+          }) => ({
+            id: cell.id,
+            latitude: cell.latitude,
+            longitude: cell.longitude,
+            score: cell.score,
+            radius: cell.radius,
+            eventCount: cell.eventCount,
+            expectedAttendance: cell.expectedAttendance,
+          })),
+        );
+        setMobilityForecastCells(
+          (data.mobilityForecastCells ?? []).map((cell: {
+            id: string;
+            latitude: number;
+            longitude: number;
+            score: number;
+            radius: number;
+            serviceIntensity: number;
+            stopCount: number;
+          }) => ({
+            id: cell.id,
+            latitude: cell.latitude,
+            longitude: cell.longitude,
+            score: cell.score,
+            radius: cell.radius,
+            serviceIntensity: cell.serviceIntensity,
+            stopCount: cell.stopCount,
+          })),
+        );
+      } catch {
+        // The absence of a heatmap must never produce a development overlay.
+      }
+    };
+
+    void loadAreaHeatmap();
+    const refreshInterval = setInterval(
+      () => void loadAreaHeatmap(),
+      CLIENT_REFRESH_INTERVAL_MS,
+    );
+
+    return () => {
+      cancelled = true;
+      clearInterval(refreshInterval);
+    };
+  }, [crowdStrategy]);
 
   const stopLocationContribution = () => {
     locationSubscriptionRef.current?.remove();
@@ -933,13 +1102,17 @@ export default function HomeScreen() {
     lastSentLocationRef.current = null;
     locationSessionIdRef.current = null;
     setContributionEnabled(false);
+    setContributionStatus('idle');
   };
 
   const sendLocationObservation = async (
     location: Location.LocationObject,
   ) => {
     const accuracy = location.coords.accuracy;
-    if (accuracy !== null && accuracy > LOCATION_MAX_ACCURACY_METERS) return;
+    if (accuracy !== null && accuracy > LOCATION_MAX_ACCURACY_METERS) {
+      setContributionStatus('waiting');
+      return;
+    }
 
     const now = Date.now();
     const nextPoint = {
@@ -952,20 +1125,26 @@ export default function HomeScreen() {
       nextPoint.longitude < MILAN_BOUNDS.west ||
       nextPoint.longitude > MILAN_BOUNDS.east
     ) {
+      setContributionStatus('waiting');
       return;
     }
     const previous = lastSentLocationRef.current;
+    const gridKey = privacyGridKey(nextPoint.latitude, nextPoint.longitude);
     if (
       previous &&
       now - previous.sentAt < LOCATION_MIN_SEND_INTERVAL_MS &&
-      distanceMeters(previous, nextPoint) < LOCATION_MIN_DISTANCE_METERS
+      previous.gridKey === gridKey
     ) {
+      setContributionStatus('waiting');
       return;
     }
 
     const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
     const sessionId = locationSessionIdRef.current;
-    if (!supabaseKey || !sessionId) return;
+    if (!supabaseKey || !sessionId) {
+      setContributionStatus('error');
+      return;
+    }
 
     const response = await fetch(SUPABASE_LOCATION_INGEST_URL, {
       method: 'POST',
@@ -976,19 +1155,35 @@ export default function HomeScreen() {
       },
       body: JSON.stringify({
         sessionId,
-        latitude: nextPoint.latitude,
-        longitude: nextPoint.longitude,
+        // The GPS fix stays on-device. The backend receives only a roughly
+        // 440m privacy cell and derives the cell centre server-side.
+        gridKey,
         accuracyMeters: accuracy,
         observedAt: new Date(location.timestamp).toISOString(),
+        consentVersion: LOCATION_CONSENT_VERSION,
       }),
     });
 
-    if (!response.ok) {
+    const result = await response.json().catch(() => null) as {
+      ok?: boolean;
+      accepted?: boolean;
+    } | null;
+    if (!response.ok || !result?.ok) {
       console.warn('LOCATION INGEST ERROR:', response.status);
+      setContributionStatus('error');
       return;
     }
 
-    lastSentLocationRef.current = { ...nextPoint, sentAt: now };
+    if (result.accepted) {
+      lastSentLocationRef.current = { gridKey, sentAt: now };
+      setLastContributionAt(new Date().toISOString());
+      setContributionStatus('active');
+    } else {
+      // The server saw this session recently. Mirror that gate locally so a
+      // burst of GPS callbacks cannot create repeated network requests.
+      lastSentLocationRef.current = { gridKey, sentAt: now };
+      setContributionStatus('waiting');
+    }
   };
 
   const startLocationContribution = async () => {
@@ -1002,19 +1197,41 @@ export default function HomeScreen() {
     }
 
     locationSessionIdRef.current = Crypto.randomUUID();
-    locationSubscriptionRef.current = await Location.watchPositionAsync(
-      {
-        accuracy: Location.Accuracy.Balanced,
-        distanceInterval: LOCATION_MIN_DISTANCE_METERS,
-        timeInterval: LOCATION_MIN_SEND_INTERVAL_MS,
-      },
-      (location) => {
-        void sendLocationObservation(location).catch((error) =>
-          console.warn('LOCATION INGEST ERROR:', error),
-        );
-      },
-    );
     setContributionEnabled(true);
+    setContributionStatus('starting');
+
+    // A watcher can wait for movement. Send one current, foreground fix now
+    // so that a consenting person can contribute immediately.
+    try {
+      const currentLocation = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      await sendLocationObservation(currentLocation);
+    } catch (error) {
+      // The watcher below can still supply the next valid GPS fix.
+      console.warn('LOCATION INITIAL FIX ERROR:', error);
+      setContributionStatus('error');
+    }
+
+    try {
+      locationSubscriptionRef.current = await Location.watchPositionAsync(
+        {
+          accuracy: Location.Accuracy.Balanced,
+          distanceInterval: 100,
+          timeInterval: LOCATION_MIN_SEND_INTERVAL_MS,
+        },
+        (location) => {
+          void sendLocationObservation(location).catch((error) => {
+            console.warn('LOCATION INGEST ERROR:', error);
+            setContributionStatus('error');
+          });
+        },
+      );
+    } catch (error) {
+      console.warn('LOCATION WATCH ERROR:', error);
+      stopLocationContribution();
+      setContributionStatus('error');
+    }
   };
 
   const handleContributionPress = () => {
@@ -1025,7 +1242,7 @@ export default function HomeScreen() {
 
     Alert.alert(
       'Contribuisci alla mappa live?',
-      'Se accetti, LIVE CITY usa la posizione solo mentre l’app è aperta. Invia un identificatore casuale di sessione, non il tuo nome. I punti grezzi vengono eliminati entro 24 ore e diventano visibili solo come dati aggregati di almeno 5 persone.',
+      'Se accetti, LIVE CITY usa la posizione solo mentre l’app è aperta. Il telefono invia una zona approssimata, non le coordinate GPS precise, insieme a un identificatore casuale di sessione. Puoi interrompere quando vuoi; le zone diventano visibili solo con almeno 5 persone.',
       [
         { text: 'Non ora', style: 'cancel' },
         {
@@ -1044,6 +1261,84 @@ export default function HomeScreen() {
     },
     [],
   );
+
+  const handleCreateEvent = async () => {
+    const title = eventTitle.trim();
+    const expectedAttendance = Number(eventAttendance);
+    if (title.length < 3) {
+      Alert.alert('Titolo troppo breve', 'Inserisci almeno 3 caratteri.');
+      return;
+    }
+    if (!Number.isInteger(expectedAttendance) || expectedAttendance < 2 || expectedAttendance > 5000) {
+      Alert.alert('Partecipanti non validi', 'Indica un numero tra 2 e 5.000.');
+      return;
+    }
+
+    const session = await loadSocialSession();
+    if (!session) {
+      Alert.alert(
+        'Accedi per pubblicare',
+        'La creazione degli eventi richiede un account, così possiamo proteggere la community e permetterti di gestire i tuoi eventi.',
+      );
+      return;
+    }
+
+    setCreatingEvent(true);
+    try {
+      const startAt = new Date();
+      const endAt = new Date(startAt.getTime() + 3 * 60 * 60 * 1000);
+      const key = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+      if (!key) throw new Error('Configurazione non disponibile');
+      const response = await fetch(SUPABASE_EVENTS_CREATE_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${session.accessToken}`,
+          apikey: key,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          title,
+          description: eventDescription.trim() || null,
+          category: eventCategory,
+          latitude: eventZone.latitude,
+          longitude: eventZone.longitude,
+          startAt: startAt.toISOString(),
+          endAt: endAt.toISOString(),
+          expectedAttendance,
+        }),
+      });
+      const data = await response.json().catch(() => null) as { ok?: boolean; error?: string; event?: Record<string, unknown> } | null;
+      if (!response.ok || !data?.ok || !data.event) throw new Error(data?.error ?? 'Evento non pubblicato');
+
+      const created = data.event;
+      setEvents((current) => [{
+        id: String(created.id),
+        title: String(created.title),
+        description: typeof created.description === 'string' ? created.description : null,
+        category: created.category as PlaceCategory,
+        venueName: null,
+        placeId: typeof created.place_id === 'number' ? String(created.place_id) : null,
+        address: 'Zona scelta dall’organizzatore',
+        latitude: Number(created.latitude),
+        longitude: Number(created.longitude),
+        startAt: String(created.start_at),
+        endAt: String(created.end_at),
+        source: 'community',
+        isActive: true,
+        expectedAttendance,
+        crowdForecastScore: null,
+      }, ...current]);
+      setEventComposerOpen(false);
+      setEventTitle('');
+      setEventDescription('');
+      setEventAttendance('30');
+      Alert.alert('Evento pubblicato', 'Il crowd engine lo elaborerà come previsione dichiarata della zona entro il prossimo ciclo di 20 minuti.');
+    } catch (error) {
+      Alert.alert('Evento non pubblicato', error instanceof Error ? error.message : 'Riprova tra poco.');
+    } finally {
+      setCreatingEvent(false);
+    }
+  };
 
   /* =======================================================
      SELECTION
@@ -1079,6 +1374,12 @@ export default function HomeScreen() {
     setSelectedCategory(category);
   };
 
+  const handleDisplayModeChange = (mode: MapDisplayMode) => {
+    setSelectedPlace(null);
+    setSelectedEvent(null);
+    setMapDisplayMode(mode);
+  };
+
   /* =======================================================
      RENDER
   ======================================================= */
@@ -1088,45 +1389,74 @@ export default function HomeScreen() {
       <MapView
         style={StyleSheet.absoluteFill}
         initialRegion={MILAN_REGION}
+        mapType={
+          Platform.OS === 'ios' && showHeatmap
+            ? 'mutedStandard'
+            : 'standard'
+        }
         showsUserLocation={contributionEnabled}
         showsMyLocationButton={false}
+        onRegionChangeComplete={(region) => {
+          setEventZone({ latitude: region.latitude, longitude: region.longitude });
+        }}
       >
-        {showHeatmap &&
-          heatCells.map((cell) => (
-            <Circle
-              key={`heat-outer-${cell.id}`}
-              center={{ latitude: cell.latitude, longitude: cell.longitude }}
-              radius={cell.radius}
-              fillColor={heatColor(cell.score, 0.3)}
-              strokeColor={heatColor(cell.score, 0.48)}
-              strokeWidth={2}
-              zIndex={5}
-            />
-          ))}
+        {showHeatmap && displayedAreaHeatCells.length > 0 &&
+          displayedAreaHeatCells.flatMap((cell) =>
+            HEATMAP_RINGS.map((ring, index) => (
+              <Circle
+                key={`heat-${cell.id}-${ring.radiusMultiplier}`}
+                center={{ latitude: cell.latitude, longitude: cell.longitude }}
+                radius={cell.radius * ring.radiusMultiplier}
+                fillColor={heatmapRingColor(
+                  ring.color,
+                  heatmapRingOpacity(cell.score, ring.opacity),
+                )}
+                strokeColor="transparent"
+                zIndex={5 + index}
+              />
+            )),
+          )}
 
-        {showHeatmap &&
-          heatCells.map((cell) => (
+        {showHeatmap && mobilityForecastCells.flatMap((cell) =>
+          HEATMAP_RINGS.map((ring, index) => (
             <Circle
-              key={`heat-inner-${cell.id}`}
+              key={`mobility-forecast-${cell.id}-${ring.radiusMultiplier}`}
               center={{ latitude: cell.latitude, longitude: cell.longitude }}
-              radius={cell.radius * 0.48}
-              fillColor={heatColor(cell.score, 0.62)}
+              radius={cell.radius * ring.radiusMultiplier}
+              fillColor={heatmapRingColor(
+                '#16A7A0',
+                heatmapRingOpacity(cell.score, ring.opacity * 0.5),
+              )}
               strokeColor="transparent"
-              zIndex={6}
+              zIndex={8 + index}
             />
-          ))}
+          )),
+        )}
 
-        {filteredPlaces.map(
+        {showHeatmap && eventForecastCells.flatMap((cell) =>
+          HEATMAP_RINGS.map((ring, index) => (
+            <Circle
+              key={`event-forecast-${cell.id}-${ring.radiusMultiplier}`}
+              center={{ latitude: cell.latitude, longitude: cell.longitude }}
+              radius={cell.radius * ring.radiusMultiplier}
+              fillColor={heatmapRingColor(
+                '#2F7BE5',
+                heatmapRingOpacity(cell.score, ring.opacity * 0.7),
+              )}
+              strokeColor="transparent"
+              zIndex={11 + index}
+            />
+          )),
+        )}
+
+        {showPlaceMarkers && filteredPlaces.map(
           (place) => {
             const config =
               categoryConfig[
                 place.category
               ];
 
-            const markerSize =
-              getMarkerSize(
-                place.activityLevel,
-              );
+            const markerSize = getMarkerSize(place.crowdScore);
 
             return (
               <Marker
@@ -1186,7 +1516,7 @@ export default function HomeScreen() {
           },
         )}
 
-        {events.map(
+        {showPlaceMarkers && events.map(
           (event) => {
             const config =
               categoryConfig[
@@ -1276,14 +1606,26 @@ export default function HomeScreen() {
             }
           >
             <Pressable
-              accessibilityLabel="Mostra o nascondi la superficie di affollamento"
-              onPress={() => setShowHeatmap((value) => !value)}
+              accessibilityLabel="Mostra la modalita Zone affollate"
+              onPress={() => handleDisplayModeChange('crowd')}
               style={[styles.iconButton, showHeatmap && styles.iconButtonActive]}
             >
               <MaterialCommunityIcons
                 name="blur"
                 size={22}
                 color={showHeatmap ? '#FFFFFF' : '#111111'}
+              />
+            </Pressable>
+
+            <Pressable
+              accessibilityLabel="Mostra la modalita Luoghi"
+              onPress={() => handleDisplayModeChange('places')}
+              style={[styles.iconButton, showPlaceMarkers && styles.iconButtonActive]}
+            >
+              <MaterialCommunityIcons
+                name="map-marker-radius-outline"
+                size={22}
+                color={showPlaceMarkers ? '#FFFFFF' : '#111111'}
               />
             </Pressable>
 
@@ -1299,6 +1641,18 @@ export default function HomeScreen() {
                 name={contributionEnabled ? 'crosshairs-gps' : 'crosshairs'}
                 size={22}
                 color={contributionEnabled ? '#FFFFFF' : '#111111'}
+              />
+            </Pressable>
+
+            <Pressable
+              accessibilityLabel="Crea un evento nella zona selezionata"
+              onPress={() => setEventComposerOpen(true)}
+              style={styles.iconButton}
+            >
+              <MaterialCommunityIcons
+                name="calendar-plus"
+                size={22}
+                color="#111111"
               />
             </Pressable>
           </View>
@@ -1494,6 +1848,19 @@ export default function HomeScreen() {
           )}
         </ScrollView>
 
+        <View style={styles.strategyPill}>
+          <MaterialCommunityIcons
+            name={crowdStrategy === 'hybrid' ? 'transit-connection-variant' : 'signal'}
+            size={14}
+            color={crowdStrategy === 'hybrid' ? '#0D6D69' : '#4B4B4B'}
+          />
+          <Text style={styles.strategyPillText}>
+            {crowdStrategy === 'hybrid'
+              ? 'Hybrid · telemetria + mobilità + eventi + storico'
+              : 'BestTime · provider + telemetria + storico'}
+          </Text>
+        </View>
+
         {loading && (
           <View
             style={
@@ -1518,13 +1885,121 @@ export default function HomeScreen() {
               <View style={[styles.heatLegendDot, styles.heatHigh]} />
             </View>
             <Text style={styles.heatLegendText}>
-              {heatLabel(heatmapHasLiveData)}
+              {heatmapLabel}
+            </Text>
+          </View>
+        )}
+
+        {showCrowdUnavailableNotice && (
+          <View style={styles.crowdUnavailablePill}>
+            <MaterialCommunityIcons name="signal-cellular-outline" size={15} color="#7B5A00" />
+            <Text style={styles.crowdUnavailableText}>
+              Crowd non disponibile · marker neutri
+            </Text>
+          </View>
+        )}
+
+        {contributionEnabled && (
+          <View style={styles.contributionPill}>
+            <MaterialCommunityIcons
+              name={
+                contributionStatus === 'active'
+                  ? 'check-circle'
+                  : contributionStatus === 'error'
+                    ? 'alert-circle-outline'
+                    : 'progress-clock'
+              }
+              size={15}
+              color={contributionStatus === 'error' ? '#B44732' : '#217A52'}
+            />
+            <Text style={styles.contributionText}>
+              {contributionStatus === 'active'
+                ? `Contributo ricevuto${lastContributionAt ? ` · ${formatCrowdUpdatedAt(lastContributionAt)}` : ''}`
+                : contributionStatus === 'error'
+                  ? 'Contributo non inviato · riproveremo al prossimo fix'
+                  : contributionStatus === 'starting'
+                    ? 'Ricerca della posizione in corso'
+                    : 'Contributo attivo · in attesa del prossimo invio'}
             </Text>
           </View>
         )}
       </SafeAreaView>
 
       <Text style={styles.mapAttribution}>© OpenStreetMap contributors</Text>
+
+      <Modal
+        animationType="slide"
+        transparent
+        visible={eventComposerOpen}
+        onRequestClose={() => setEventComposerOpen(false)}
+      >
+        <View style={styles.composerBackdrop}>
+          <View style={styles.composerCard}>
+            <View style={styles.composerHeader}>
+              <View>
+                <Text style={styles.composerTitle}>Crea un evento</Text>
+                <Text style={styles.composerSubtitle}>La zona è il centro della mappa. Chiudi e sposta la mappa per cambiarla.</Text>
+              </View>
+              <Pressable onPress={() => setEventComposerOpen(false)} style={styles.closeButton}>
+                <MaterialCommunityIcons name="close" size={20} color="#111111" />
+              </Pressable>
+            </View>
+
+            <TextInput
+              value={eventTitle}
+              onChangeText={setEventTitle}
+              placeholder="Nome dell'evento"
+              placeholderTextColor="#9299A1"
+              maxLength={90}
+              style={styles.composerInput}
+            />
+            <TextInput
+              value={eventDescription}
+              onChangeText={setEventDescription}
+              placeholder="Descrizione facoltativa"
+              placeholderTextColor="#9299A1"
+              maxLength={500}
+              multiline
+              style={[styles.composerInput, styles.composerDescription]}
+            />
+
+            <Text style={styles.composerLabel}>Categoria</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.composerCategories}>
+              {(Object.keys(categoryConfig) as PlaceCategory[]).map((category) => {
+                const active = eventCategory === category;
+                const config = categoryConfig[category];
+                return (
+                  <Pressable
+                    key={category}
+                    onPress={() => setEventCategory(category)}
+                    style={[styles.composerCategory, active && { backgroundColor: config.color, borderColor: config.color }]}
+                  >
+                    <Text style={[styles.composerCategoryText, active && styles.composerCategoryTextActive]}>{config.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+
+            <Text style={styles.composerLabel}>Partecipanti attesi</Text>
+            <TextInput
+              value={eventAttendance}
+              onChangeText={setEventAttendance}
+              keyboardType="number-pad"
+              maxLength={4}
+              style={styles.composerInput}
+            />
+            <Text style={styles.composerHint}>Inizia ora e dura 3 ore. Il numero è usato solo per una previsione di zona, non come presenza reale.</Text>
+
+            <Pressable
+              disabled={creatingEvent}
+              onPress={() => void handleCreateEvent()}
+              style={[styles.publishEventButton, creatingEvent && styles.publishEventButtonDisabled]}
+            >
+              <Text style={styles.publishEventButtonText}>{creatingEvent ? 'Pubblicazione…' : 'Pubblica evento'}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
 
       {selectedPlace && (
         <View
@@ -1719,6 +2194,62 @@ export default function HomeScreen() {
                 </View>
               </View>
             </View>
+
+            <View style={styles.crowdForecastSection}>
+              <View style={styles.crowdForecastHeader}>
+                <MaterialCommunityIcons
+                  name="clock-fast"
+                  size={15}
+                  color="#666666"
+                />
+                <Text style={styles.crowdForecastTitle}>
+                  Previsione prossime ore
+                </Text>
+              </View>
+
+              {selectedPlace.crowdForecast.length > 0 ? (
+                <View style={styles.crowdForecastRow}>
+                  {selectedPlace.crowdForecast.map((forecast) => (
+                    <View key={forecast.time} style={styles.crowdForecastSlot}>
+                      <Text style={styles.crowdForecastTime}>{forecast.time}</Text>
+                      <Text style={styles.crowdForecastScore}>{forecast.score}/100</Text>
+                      <Text style={styles.crowdForecastConfidence}>
+                        {getForecastConfidenceLabel(forecast.confidence)}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              ) : (
+                <Text style={styles.crowdForecastEmpty}>
+                  In costruzione: richiede almeno 12 osservazioni reali su 3 giorni per fascia oraria.
+                </Text>
+              )}
+            </View>
+
+            <View style={styles.crowdProvenanceRow}>
+              <MaterialCommunityIcons
+                name={
+                  selectedPlace.crowdDataState === 'unavailable'
+                    ? 'information-outline'
+                    : selectedPlace.crowdIsFallback ||
+                        selectedPlace.crowdDataState === 'fallback'
+                      ? 'chart-timeline-variant'
+                      : 'check-decagram-outline'
+                }
+                size={15}
+                color="#666666"
+              />
+              <View style={styles.crowdProvenanceTextWrap}>
+                <Text style={styles.crowdProvenanceText}>
+                  {getCrowdProvenance(selectedPlace)}
+                </Text>
+                {selectedPlace.crowdUpdatedAt && (
+                  <Text style={styles.crowdProvenanceTime}>
+                    Aggiornato alle {formatCrowdUpdatedAt(selectedPlace.crowdUpdatedAt)}
+                  </Text>
+                )}
+              </View>
+            </View>
           </View>
         </View>
       )}
@@ -1826,6 +2357,15 @@ export default function HomeScreen() {
                   selectedEvent.description
                 }
               </Text>
+            )}
+
+            {selectedEvent.source === 'community' && (
+              <View style={styles.eventForecastNotice}>
+                <MaterialCommunityIcons name="chart-timeline-variant" size={17} color="#2763B5" />
+                <Text style={styles.eventForecastNoticeText}>
+                  Previsione dichiarata: {selectedEvent.expectedAttendance ?? '—'} partecipanti attesi. Non è foot traffic verificato.
+                </Text>
+              </View>
             )}
 
             <View
@@ -1947,6 +2487,10 @@ export default function HomeScreen() {
       )}
     </View>
   );
+}
+
+export default function HomeScreen() {
+  return <LiveCityMapScreen crowdStrategy="besttime" />;
 }
 
 /* =========================================================
@@ -2153,6 +2697,30 @@ const styles =
         '#FFFFFF',
     },
 
+    strategyPill: {
+      alignSelf: 'flex-start',
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      marginHorizontal: 16,
+      marginTop: 2,
+      paddingHorizontal: 10,
+      paddingVertical: 7,
+      borderRadius: 14,
+      backgroundColor: 'rgba(255, 255, 255, 0.94)',
+      shadowColor: '#000000',
+      shadowOpacity: 0.07,
+      shadowRadius: 6,
+      shadowOffset: { width: 0, height: 2 },
+      elevation: 2,
+    },
+
+    strategyPillText: {
+      color: '#35424A',
+      fontSize: 10,
+      fontWeight: '800',
+    },
+
     loadingText: {
       fontSize: 12,
       fontWeight:
@@ -2186,19 +2754,67 @@ const styles =
     },
 
     heatLow: {
-      backgroundColor: '#3FAE62',
+      backgroundColor: '#FFD84A',
     },
 
     heatMedium: {
-      backgroundColor: '#FFBE2D',
+      backgroundColor: '#FF7A2F',
     },
 
     heatHigh: {
-      backgroundColor: '#E12837',
+      backgroundColor: '#8C4DCE',
     },
 
     heatLegendText: {
       color: '#333333',
+      fontSize: 11,
+      fontWeight: '700',
+    },
+
+    contributionPill: {
+      alignSelf: 'flex-start',
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 7,
+      marginTop: 8,
+      marginHorizontal: 16,
+      paddingHorizontal: 11,
+      paddingVertical: 8,
+      borderRadius: 14,
+      backgroundColor: 'rgba(255, 255, 255, 0.94)',
+      shadowColor: '#000000',
+      shadowOpacity: 0.1,
+      shadowRadius: 7,
+      shadowOffset: { width: 0, height: 2 },
+      elevation: 3,
+    },
+
+    crowdUnavailablePill: {
+      alignSelf: 'flex-start',
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 7,
+      marginTop: 8,
+      marginHorizontal: 16,
+      paddingHorizontal: 11,
+      paddingVertical: 8,
+      borderRadius: 14,
+      backgroundColor: 'rgba(255, 248, 228, 0.96)',
+      shadowColor: '#000000',
+      shadowOpacity: 0.08,
+      shadowRadius: 7,
+      shadowOffset: { width: 0, height: 2 },
+      elevation: 3,
+    },
+
+    crowdUnavailableText: {
+      color: '#6E5100',
+      fontSize: 11,
+      fontWeight: '700',
+    },
+
+    contributionText: {
+      color: '#385047',
       fontSize: 11,
       fontWeight: '700',
     },
@@ -2273,6 +2889,134 @@ const styles =
       borderWidth: 2,
       borderColor:
         '#FFFFFF',
+    },
+
+    composerBackdrop: {
+      flex: 1,
+      justifyContent: 'flex-end',
+      backgroundColor: 'rgba(0, 0, 0, 0.32)',
+    },
+
+    composerCard: {
+      backgroundColor: '#FFFFFF',
+      borderTopLeftRadius: 28,
+      borderTopRightRadius: 28,
+      padding: 20,
+      paddingBottom: 34,
+      gap: 11,
+    },
+
+    composerHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      gap: 12,
+      alignItems: 'flex-start',
+    },
+
+    composerTitle: {
+      color: '#111111',
+      fontSize: 21,
+      fontWeight: '800',
+    },
+
+    composerSubtitle: {
+      color: '#68717B',
+      fontSize: 12,
+      lineHeight: 17,
+      marginTop: 3,
+      maxWidth: 285,
+    },
+
+    composerInput: {
+      minHeight: 46,
+      borderWidth: 1,
+      borderColor: '#E2E5E8',
+      borderRadius: 13,
+      paddingHorizontal: 13,
+      color: '#1A1A1A',
+      fontSize: 14,
+      backgroundColor: '#FAFBFC',
+    },
+
+    composerDescription: {
+      minHeight: 68,
+      paddingTop: 12,
+      textAlignVertical: 'top',
+    },
+
+    composerLabel: {
+      color: '#333333',
+      fontSize: 13,
+      fontWeight: '800',
+      marginTop: 2,
+    },
+
+    composerCategories: {
+      gap: 7,
+      paddingRight: 12,
+    },
+
+    composerCategory: {
+      borderWidth: 1,
+      borderColor: '#E2E5E8',
+      borderRadius: 16,
+      paddingHorizontal: 12,
+      height: 32,
+      justifyContent: 'center',
+      backgroundColor: '#FFFFFF',
+    },
+
+    composerCategoryText: {
+      color: '#4F5861',
+      fontSize: 12,
+      fontWeight: '700',
+    },
+
+    composerCategoryTextActive: {
+      color: '#FFFFFF',
+    },
+
+    composerHint: {
+      color: '#69727B',
+      fontSize: 11,
+      lineHeight: 16,
+      marginTop: -3,
+    },
+
+    publishEventButton: {
+      height: 48,
+      borderRadius: 15,
+      justifyContent: 'center',
+      alignItems: 'center',
+      backgroundColor: '#111111',
+      marginTop: 3,
+    },
+
+    publishEventButtonDisabled: {
+      opacity: 0.55,
+    },
+
+    publishEventButtonText: {
+      color: '#FFFFFF',
+      fontSize: 15,
+      fontWeight: '800',
+    },
+
+    eventForecastNotice: {
+      flexDirection: 'row',
+      gap: 8,
+      backgroundColor: '#EEF5FF',
+      borderRadius: 13,
+      padding: 10,
+      alignItems: 'flex-start',
+    },
+
+    eventForecastNoticeText: {
+      flex: 1,
+      color: '#31506F',
+      fontSize: 12,
+      lineHeight: 17,
+      fontWeight: '600',
     },
 
     cardContainer: {
@@ -2430,6 +3174,94 @@ const styles =
       alignItems:
         'center',
       gap: 4,
+    },
+
+    crowdForecastSection: {
+      marginTop: 16,
+      paddingTop: 13,
+      borderTopWidth: 1,
+      borderTopColor: '#F0F0F0',
+    },
+
+    crowdForecastHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      marginBottom: 10,
+    },
+
+    crowdForecastTitle: {
+      color: '#555555',
+      fontSize: 11,
+      fontWeight: '800',
+      textTransform: 'uppercase',
+      letterSpacing: 0.35,
+    },
+
+    crowdForecastRow: {
+      flexDirection: 'row',
+      gap: 8,
+    },
+
+    crowdForecastSlot: {
+      flex: 1,
+      minWidth: 0,
+      backgroundColor: '#F7F7F7',
+      borderRadius: 12,
+      paddingVertical: 8,
+      paddingHorizontal: 7,
+    },
+
+    crowdForecastTime: {
+      color: '#777777',
+      fontSize: 10,
+      fontWeight: '700',
+    },
+
+    crowdForecastScore: {
+      color: '#111111',
+      fontSize: 14,
+      fontWeight: '800',
+      marginTop: 3,
+    },
+
+    crowdForecastConfidence: {
+      color: '#888888',
+      fontSize: 9,
+      fontWeight: '600',
+      marginTop: 2,
+    },
+
+    crowdForecastEmpty: {
+      color: '#777777',
+      fontSize: 11,
+      lineHeight: 16,
+    },
+
+    crowdProvenanceRow: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      gap: 7,
+      marginTop: 16,
+      paddingTop: 13,
+      borderTopWidth: 1,
+      borderTopColor: '#F0F0F0',
+    },
+
+    crowdProvenanceTextWrap: {
+      flex: 1,
+    },
+
+    crowdProvenanceText: {
+      color: '#555555',
+      fontSize: 11,
+      fontWeight: '700',
+    },
+
+    crowdProvenanceTime: {
+      color: '#999999',
+      fontSize: 10,
+      marginTop: 3,
     },
 
     eventCard: {

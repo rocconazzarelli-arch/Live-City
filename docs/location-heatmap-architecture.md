@@ -5,7 +5,7 @@
 La mappa deve distinguere sempre tre casi:
 
 - **live**: BestTime fresco oppure telemetria LIVE CITY aggregata da almeno 5 sessioni anonime;
-- **stima**: profilo temporale, evento o dato provider diventato stale con peso ridotto;
+- **stima**: previsione ottenuta da osservazioni live storicizzate per quello stesso luogo, giorno della settimana e ora; oppure evento o provider stale, sempre esplicitamente etichettati;
 - **non disponibile**: nessun segnale utilizzabile.
 
 La superficie di calore usa celle di circa 300–400 metri ottenute dai Crowd Score dei luoghi. Su Apple Maps `react-native-maps` non abilita l'overlay `Heatmap`; per questo il client usa due cerchi traslucidi concentrici per cella. È un rendering nativo, funziona nel simulatore iOS e non richiede Google Maps.
@@ -26,16 +26,19 @@ location_observations (grezzo, 24 ore)
         ▼
 crowd_snapshots (finestra aggregata di 15 minuti, ricalcolata ogni 20)
         │  soglia privacy: almeno 5 sessioni distinte
-        ├──► crowd_baselines / crowd_place_profiles
+        ├──► crowd_place_profiles
+        └──► crowd_historical_slots (solo BestTime live e telemetria reali)
         ▼
 crowd-engine-refresh
-        │  BestTime + telemetria + eventi + profilo temporale
+        │  BestTime Live + telemetria + eventi + storico osservato
         ▼
 crowd_estimates
         │
         ▼
 places-read → marker e superficie di calore
 ```
+
+`area-heatmap-refresh` invoca `refresh_crowd_area_snapshots()` all'inizio di ogni pipeline e raggruppa le osservazioni per celle geografiche di circa 400 metri. `area-heatmap-read` restituisce soltanto celle con almeno 5 sessioni distinte: queste aree non dipendono da un locale presente nel catalogo e permettono di mostrare affollamento in parchi, vie, piazze o zone senza marker. Il crowd engine può usare solamente lo stesso snapshot pubblicabile della cella, mai `location_observations` grezza.
 
 Il refresh coordinato viene eseguito ogni 20 minuti. L'app rilegge luoghi ed eventi con la stessa frequenza mentre resta aperta.
 
@@ -46,7 +49,7 @@ BestTime è una sorgente complementare, non un prerequisito per il funzionamento
 - massimo **100 venue prioritarie** nel ciclo provider;
 - refresh BestTime al massimo **una volta per ora**; il dato viene riusato dalla pipeline e dall'app nei successivi refresh da 20 minuti;
 - una venue è mostrata come live solo se BestTime restituisce un segnale fresco e disponibile oppure se la telemetria LIVE CITY supera la soglia privacy;
-- se il provider è senza quota, lento o indisponibile, la pipeline continua con telemetria, eventi e modello temporale, etichettando il risultato come stima;
+- se il provider è senza quota, lento o indisponibile, la pipeline continua con telemetria. In assenza di un segnale live, può usare esclusivamente uno storico del medesimo luogo con almeno 12 osservazioni distribuite su 3 giorni; altrimenti restituisce **non disponibile**;
 - prima di aumentare la copertura si esegue un audit di match e disponibilità live: la capacità tecnica del provider non equivale a copertura garantita per ogni luogo.
 
 ## Consenso e privacy
@@ -58,6 +61,7 @@ BestTime è una sorgente complementare, non un prerequisito per il funzionamento
 - Il client non invia punti fuori dall'area di Milano e ignora rilevazioni con accuratezza peggiore di 250 metri; il server usa una soglia più severa per confermare la presenza presso un luogo.
 - Le osservazioni grezze scadono dopo 24 ore, le presenze dopo 7 giorni.
 - La UI non espone mai coordinate o sessioni individuali: un segnale diventa live solo con almeno 5 sessioni distinte.
+- La heatmap geografica espone solo centro e intensità della cella, mai le coordinate delle osservazioni o un conteggio sotto soglia.
 
 Prima della distribuzione pubblica servono una privacy policy consultabile dall'app, registro dei trattamenti, base giuridica documentata e processo per revoca/cancellazione. La pseudonimizzazione riduce il rischio ma non rende la posizione un dato anonimo alla fonte.
 
@@ -82,8 +86,8 @@ Una previsione non diventa affidabile perché viene aggiornata spesso. Per misur
 - non mostrare confidence alta senza un segnale live fresco;
 - usare telemetria solo sopra la soglia privacy;
 - ridurre automaticamente il peso del provider con l'età;
-- mantenere il fallback temporale esplicitamente etichettato come stima;
-- ricalibrare i profili solo dopo almeno 12 finestre distribuite su 3 giorni.
+- non usare baseline di categoria o valori inventati per riempire i buchi;
+- ricalibrare gli slot storici solo dopo almeno 12 osservazioni live distribuite su 3 giorni.
 
 ## Fonti catalogo
 

@@ -74,7 +74,11 @@ Deno.serve(async (request) => {
         });
     const [provider, telemetry] = await Promise.all([
       providerPromise,
-      callFunction(baseUrl, serviceRoleKey, "crowd-aggregate", {}),
+      // Aggregate the coarse privacy cells immediately before recalculating
+      // estimates. This replaces the old, non-existent `crowd-aggregate`
+      // dependency and makes the 20-minute pipeline deterministic: only
+      // k-anonymous area snapshots can reach the crowd engine.
+      callFunction(baseUrl, serviceRoleKey, "area-heatmap-refresh", {}),
     ]);
 
     // Provider or telemetry failures must never stop the hybrid estimate refresh.

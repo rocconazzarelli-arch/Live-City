@@ -7,7 +7,13 @@ export type PlaceCategory =
 
 export type ActivityLevel = "low" | "medium" | "high" | "very_high";
 export type CrowdTrend = "up" | "stable" | "down";
-export type SignalKind = "besttime" | "telemetry" | "event" | "temporal";
+export type SignalKind =
+  | "besttime"
+  | "telemetry"
+  | "mobility"
+  | "event"
+  | "historical"
+  | "unavailable";
 
 export type PlaceInput = {
   id: number;
@@ -23,10 +29,14 @@ export type CrowdCacheInput = {
   confidence: string | null;
   fetched_at: string;
   expires_at: string;
+  // The provider adapter must stamp this from the BestTime response.  A
+  // forecast, cached legacy row, or unknown response can never masquerade as
+  // a current observation.
+  observation_mode: "live" | "forecast" | "unknown" | null;
 };
 
 export type EventInput = {
-  id: number;
+  id: number | string;
   place_id: number | null;
   category: PlaceCategory;
   latitude: number;
@@ -34,6 +44,8 @@ export type EventInput = {
   start_at: string;
   end_at: string;
   is_active: boolean;
+  expected_attendance?: number | null;
+  source?: "editorial" | "community";
 };
 
 export type PresenceSnapshotInput = {
@@ -58,6 +70,28 @@ export type PresenceProfileInput = {
   sample_count: number;
   distinct_days: number;
   confidence: number;
+};
+
+export type HistoricalSlotInput = {
+  place_id: number;
+  local_weekday: number;
+  local_hour: number;
+  average_score: number;
+  sample_count: number;
+  distinct_days: number;
+  besttime_samples: number;
+  telemetry_samples: number;
+};
+
+export type MobilityProfileInput = {
+  grid_key: string;
+  local_day_type: "L" | "S" | "F";
+  local_hour: number;
+  service_intensity: number;
+  mobility_score: number;
+  stop_count: number;
+  source_updated_at: string;
+  refreshed_at: string;
 };
 
 export type EngineSignal = {
@@ -86,66 +120,6 @@ export type EstimateResult = {
   metadata: Record<string, unknown>;
 };
 
-type TimeSlot = {
-  start: number;
-  end: number;
-  score: number;
-};
-
-type TemporalProfile = {
-  defaultScore: number;
-  weekendBonus: number;
-  slots: TimeSlot[];
-};
-
-// Product-tunable Milan baselines. Slots use local Europe/Rome hours. A slot
-// whose end is lower than its start crosses midnight.
-export const TEMPORAL_PROFILES: Record<PlaceCategory, TemporalProfile> = {
-  aperitivo: {
-    defaultScore: 16,
-    weekendBonus: 8,
-    slots: [
-      { start: 12, end: 16, score: 30 },
-      { start: 16, end: 21, score: 65 },
-      { start: 21, end: 1, score: 43 },
-    ],
-  },
-  food: {
-    defaultScore: 18,
-    weekendBonus: 6,
-    slots: [
-      { start: 7, end: 10, score: 34 },
-      { start: 12, end: 15, score: 62 },
-      { start: 19, end: 23, score: 70 },
-    ],
-  },
-  nightlife: {
-    defaultScore: 7,
-    weekendBonus: 12,
-    slots: [
-      { start: 20, end: 23, score: 38 },
-      { start: 23, end: 5, score: 76 },
-    ],
-  },
-  outdoor: {
-    defaultScore: 14,
-    weekendBonus: 10,
-    slots: [
-      { start: 7, end: 11, score: 47 },
-      { start: 11, end: 19, score: 58 },
-      { start: 19, end: 22, score: 32 },
-    ],
-  },
-  culture: {
-    defaultScore: 10,
-    weekendBonus: 6,
-    slots: [
-      { start: 9, end: 19, score: 54 },
-      { start: 19, end: 23, score: 31 },
-    ],
-  },
-};
-
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 const MAX_STALE_BESTTIME_AGE_MS = 24 * HOUR_MS;
@@ -159,15 +133,7 @@ export function clamp(value: number, min = 0, max = 100): number {
   return Math.min(max, Math.max(min, value));
 }
 
-function isHourInSlot(hour: number, slot: TimeSlot): boolean {
-  if (slot.start < slot.end) {
-    return hour >= slot.start && hour < slot.end;
-  }
-
-  return hour >= slot.start || hour < slot.end;
-}
-
-function romeClock(date: Date): { hour: number; weekend: boolean } {
+function romeClock(date: Date): { hour: number; weekday: number } {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Europe/Rome",
     hour: "numeric",
@@ -177,10 +143,10 @@ function romeClock(date: Date): { hour: number; weekend: boolean } {
   const hour = Number(parts.find((part) => part.type === "hour")?.value ?? 0);
   const weekday = parts.find((part) => part.type === "weekday")?.value;
 
-  return {
-    hour,
-    weekend: weekday === "Sat" || weekday === "Sun",
+  const weekdayMap: Record<string, number> = {
+    Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7,
   };
+  return { hour, weekday: weekdayMap[weekday ?? ""] ?? 1 };
 }
 
 function confidenceNumber(value: string | null): number {
@@ -211,28 +177,37 @@ export function trendFor(score: number, previousScore: number | null): CrowdTren
   return "stable";
 }
 
-export function buildTemporalSignal(place: PlaceInput, now: Date): EngineSignal {
-  const profile = TEMPORAL_PROFILES[place.category];
+export function buildHistoricalSignal(
+  placeId: number,
+  slot: HistoricalSlotInput | null,
+  now: Date,
+): EngineSignal | null {
+  if (!slot || slot.sample_count < 12 || slot.distinct_days < 3) return null;
+  if (!Number.isFinite(slot.average_score) || slot.average_score < 0 || slot.average_score > 100) return null;
   const clock = romeClock(now);
-  const slot = profile.slots.find((candidate) => isHourInSlot(clock.hour, candidate));
-  const baseScore = slot?.score ?? profile.defaultScore;
-  const score = Math.round(clamp(baseScore + (clock.weekend ? profile.weekendBonus : 0)));
+  if (slot.local_hour !== clock.hour || slot.local_weekday !== clock.weekday) return null;
+  const sampleConfidence = clamp(slot.sample_count / 48, 0.35, 0.85);
+  const dayConfidence = clamp(slot.distinct_days / 8, 0.35, 0.9);
+  const confidence = Math.round(Math.min(sampleConfidence, dayConfidence) * 100) / 100;
 
   return {
-    placeId: place.id,
+    placeId,
     source: "live_city",
-    signalType: "baseline",
-    kind: "temporal",
-    score,
-    weight: 0.35,
-    confidence: 0.3,
+    signalType: "forecast",
+    kind: "historical",
+    score: Math.round(slot.average_score),
+    weight: 0.7,
+    confidence,
     observedAt: now.toISOString(),
     validUntil: new Date(now.getTime() + HOUR_MS).toISOString(),
     metadata: {
-      model: "milan_category_hour_v1",
-      category: place.category,
+      model: "observed_history_slot_v1",
       localHour: clock.hour,
-      weekend: clock.weekend,
+      localWeekday: clock.weekday,
+      sampleCount: slot.sample_count,
+      distinctDays: slot.distinct_days,
+      bestTimeSamples: slot.besttime_samples,
+      telemetrySamples: slot.telemetry_samples,
     },
   };
 }
@@ -244,6 +219,7 @@ export function buildBestTimeSignal(
 ): EngineSignal | null {
   if (
     !cache ||
+    cache.observation_mode !== "live" ||
     cache.crowd_score === null ||
     !Number.isFinite(cache.crowd_score) ||
     cache.crowd_score < 0 ||
@@ -281,6 +257,7 @@ export function buildBestTimeSignal(
       stale: !fresh,
       ageMinutes: Math.round(ageMs / MINUTE_MS),
       providerVenueId: cache.besttime_venue_id,
+      observationMode: cache.observation_mode,
     },
   };
 }
@@ -368,6 +345,49 @@ export function buildTelemetrySignal(
   };
 }
 
+export function buildMobilitySignal(
+  placeId: number,
+  profile: MobilityProfileInput | null,
+  now: Date,
+): EngineSignal | null {
+  if (
+    !profile ||
+    !Number.isFinite(profile.mobility_score) ||
+    profile.mobility_score < 0 ||
+    profile.mobility_score > 100 ||
+    !Number.isFinite(profile.service_intensity) ||
+    profile.service_intensity <= 0 ||
+    profile.stop_count <= 0
+  ) {
+    return null;
+  }
+
+  return {
+    placeId,
+    source: "live_city",
+    signalType: "forecast",
+    kind: "mobility",
+    score: Math.round(profile.mobility_score),
+    // Scheduled public-transport supply is a useful spatial proxy, but it is
+    // not a people counter. Keep it below telemetry and observed history.
+    weight: 0.42,
+    confidence: 0.55,
+    observedAt: profile.refreshed_at,
+    validUntil: new Date(now.getTime() + HOUR_MS).toISOString(),
+    metadata: {
+      model: "milan_scheduled_mobility_v1",
+      sourceDataset: "Comune di Milano / AMAT scheduled public transport",
+      sourceMode: "scheduled_proxy",
+      localDayType: profile.local_day_type,
+      localHour: profile.local_hour,
+      serviceIntensity: Math.round(profile.service_intensity * 10) / 10,
+      stopCount: profile.stop_count,
+      sourceUpdatedAt: profile.source_updated_at,
+      disclaimer: "Mobility index, not verified live foot traffic",
+    },
+  };
+}
+
 function distanceMeters(a: PlaceInput, event: EventInput): number {
   const radius = 6_371_000;
   const toRadians = (degrees: number) => (degrees * Math.PI) / 180;
@@ -430,13 +450,19 @@ export function assignEventsToPlaces(
     if (placeId === null) continue;
 
     const proximity = active ? 1 : clamp(1 - untilStartMs / EVENT_LOOKAHEAD_MS, 0, 1);
-    const rawBoost = active ? 18 : 4 + 8 * proximity;
+    // A community event is a declared attendance forecast, not a measurement.
+    // Its size can inform the area forecast, but the signal remains explicitly
+    // forecast-only and is capped so it cannot dominate real observations.
+    const attendanceBoost = event.expected_attendance === null || event.expected_attendance === undefined
+      ? 18
+      : clamp(7 + 7 * Math.log2(1 + event.expected_attendance / 10), 8, 25);
+    const rawBoost = active ? attendanceBoost : attendanceBoost * (0.3 + 0.7 * proximity);
     const matchFactor = match === "direct" ? 1 : 0.55;
     const boost = Math.round(rawBoost * matchFactor);
     const signal: EngineSignal = {
       placeId,
       source: "live_city",
-      signalType: active ? "observed" : "forecast",
+      signalType: "forecast",
       kind: "event",
       score: boost,
       weight: active ? 0.8 * matchFactor : 0.55 * matchFactor,
@@ -449,6 +475,8 @@ export function assignEventsToPlaces(
         match,
         distanceMeters: matchedDistance,
         startsInMinutes: active ? 0 : Math.round(untilStartMs / MINUTE_MS),
+        expectedAttendance: event.expected_attendance ?? null,
+        eventSource: event.source ?? "editorial",
         contributionType: "additive_boost",
       },
     };
@@ -482,7 +510,7 @@ export function calculateEstimate(
   const dominantSource: SignalKind =
     eventSignals.length > 0 && eventSignals.reduce((sum, signal) => sum + signal.weight, 0) > (dominantBase?.weight ?? 0)
       ? "event"
-      : dominantBase?.kind ?? "temporal";
+      : dominantBase?.kind ?? "unavailable";
   const calculatedAt = now.toISOString();
   const validUntil = new Date(now.getTime() + ESTIMATE_TTL_MS).toISOString();
 
@@ -497,10 +525,14 @@ export function calculateEstimate(
     calculatedAt,
     validUntil,
     metadata: {
-      formulaVersion: "crowd_engine_v1",
+      formulaVersion: "crowd_engine_v2_observed_history",
       baseScore: Math.round(baseScore * 10) / 10,
       eventBoost,
       isFallback: !bestTime && !telemetry,
+      // A declared event can yield a low-confidence forecast where no live
+      // signal exists. It must be visible as an estimate, never discarded as
+      // unavailable or represented as verified foot traffic.
+      isUnavailable: baseSignals.length === 0 && eventSignals.length === 0,
       previousScore,
       contributions: signals.map((signal) => ({
         kind: signal.kind,
@@ -508,6 +540,76 @@ export function calculateEstimate(
         weight: Math.round(signal.weight * 100) / 100,
         confidence: signal.confidence,
         stale: signal.metadata.stale === true,
+      })),
+    },
+  };
+}
+
+export function calculateHybridEstimate(
+  placeId: number,
+  signals: EngineSignal[],
+  previousScore: number | null,
+  now: Date,
+): EstimateResult {
+  const telemetry = signals.find((signal) => signal.kind === "telemetry");
+  const forecasts = signals.filter((signal) =>
+    signal.kind === "mobility" || signal.kind === "historical"
+  );
+  const events = signals.filter((signal) => signal.kind === "event");
+
+  const forecastWeight = forecasts.reduce((sum, signal) => sum + signal.weight, 0);
+  const forecastScore = forecastWeight > 0
+    ? forecasts.reduce((sum, signal) => sum + signal.score * signal.weight, 0) / forecastWeight
+    : null;
+
+  // Fresh, privacy-safe telemetry remains the anchor. Scheduled mobility and
+  // observed history may stabilise it, but together cannot outweigh the live
+  // aggregate. Without telemetry the output is always an explicit forecast.
+  const baseScore = telemetry
+    ? forecastScore === null
+      ? telemetry.score
+      : telemetry.score * 0.75 + forecastScore * 0.25
+    : forecastScore ?? 0;
+  const eventBoost = Math.min(25, events.reduce((sum, signal) => sum + signal.score, 0));
+  const hasAnySignal = Boolean(telemetry || forecasts.length > 0 || events.length > 0);
+  const score = Math.round(clamp(baseScore + eventBoost));
+  const forecastConfidence = forecastWeight > 0
+    ? forecasts.reduce((sum, signal) => sum + signal.confidence * signal.weight, 0) / forecastWeight
+    : 0.3;
+  const confidence = telemetry
+    ? clamp(telemetry.confidence + (forecasts.length > 0 ? 0.02 : 0), 0, 0.92)
+    : clamp(forecastConfidence + (events.length > 0 ? 0.03 : 0), 0.3, 0.65);
+  const dominantForecast = [...forecasts].sort((left, right) => right.weight - left.weight)[0];
+  const dominantSource: SignalKind = telemetry
+    ? "telemetry"
+    : dominantForecast?.kind ?? (events.length > 0 ? "event" : "unavailable");
+  const calculatedAt = now.toISOString();
+
+  return {
+    placeId,
+    score,
+    activityLevel: activityLevelFor(score),
+    trend: trendFor(score, previousScore),
+    confidence: Math.round(confidence * 100) / 100,
+    dominantSource,
+    signalCount: signals.length,
+    calculatedAt,
+    validUntil: new Date(now.getTime() + ESTIMATE_TTL_MS).toISOString(),
+    metadata: {
+      formulaVersion: "hybrid_telemetry_mobility_events_history_v1",
+      strategy: "hybrid",
+      dataClass: telemetry ? "verified_live" : hasAnySignal ? "forecast" : "unavailable",
+      baseScore: Math.round(baseScore * 10) / 10,
+      eventBoost,
+      isFallback: !telemetry && hasAnySignal,
+      isUnavailable: !hasAnySignal,
+      previousScore,
+      contributions: signals.map((signal) => ({
+        kind: signal.kind,
+        score: signal.score,
+        weight: Math.round(signal.weight * 100) / 100,
+        confidence: signal.confidence,
+        sourceMode: signal.metadata.sourceMode ?? signal.signalType,
       })),
     },
   };

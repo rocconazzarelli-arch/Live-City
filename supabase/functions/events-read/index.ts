@@ -9,6 +9,30 @@ const corsHeaders = {
 const categories = new Set(["aperitivo", "food", "nightlife", "outdoor", "culture"]);
 type EventWindow = "now" | "today" | "week";
 
+type CommunityEvent = {
+  id: string;
+  title: string;
+  description: string | null;
+  category: string;
+  place_id: number | null;
+  latitude: number;
+  longitude: number;
+  start_at: string;
+  end_at: string;
+  expected_attendance: number;
+  is_active: boolean;
+};
+
+function plannedCrowdScore(event: CommunityEvent, now: Date): number {
+  const startAt = new Date(event.start_at).getTime();
+  const endAt = new Date(event.end_at).getTime();
+  const lookAheadMs = 4 * 60 * 60 * 1000;
+  const attendanceScore = Math.min(88, Math.round(12 + 15 * Math.log2(1 + event.expected_attendance / 10)));
+  if (startAt <= now.getTime() && endAt >= now.getTime()) return attendanceScore;
+  const proximity = Math.max(0, 1 - (startAt - now.getTime()) / lookAheadMs);
+  return Math.round(attendanceScore * (0.3 + 0.7 * proximity));
+}
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -89,7 +113,7 @@ Deno.serve(async (request) => {
       auth: { persistSession: false, autoRefreshToken: false },
     });
 
-    let query = supabase
+    let editorialQuery = supabase
       .from("events")
       .select("id, title, description, category, venue_name, place_id, address, latitude, longitude, start_at, end_at, source, is_active")
       .eq("is_active", true)
@@ -97,21 +121,49 @@ Deno.serve(async (request) => {
       .order("start_at", { ascending: true })
       .limit(limit);
 
+    let communityQuery = supabase
+      .from("community_events")
+      .select("id, title, description, category, place_id, latitude, longitude, start_at, end_at, expected_attendance, is_active")
+      .eq("is_active", true)
+      .gte("end_at", now.toISOString())
+      .order("start_at", { ascending: true })
+      .limit(limit);
+
     if (window === "now") {
-      query = query.lte("start_at", now.toISOString());
+      editorialQuery = editorialQuery.lte("start_at", now.toISOString());
+      communityQuery = communityQuery.lte("start_at", now.toISOString());
     } else if (window === "today") {
       const local = milanDateParts(now);
       const tomorrowMidnight = milanWallClockToUtc(local.year, local.month, local.day + 1, 0);
-      query = query.lt("start_at", tomorrowMidnight.toISOString());
+      editorialQuery = editorialQuery.lt("start_at", tomorrowMidnight.toISOString());
+      communityQuery = communityQuery.lt("start_at", tomorrowMidnight.toISOString());
     } else {
-      query = query.lt("start_at", new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString());
+      const weekEnd = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+      editorialQuery = editorialQuery.lt("start_at", weekEnd);
+      communityQuery = communityQuery.lt("start_at", weekEnd);
     }
 
-    if (category !== "all") query = query.eq("category", category);
-    const { data, error } = await query;
-    if (error) throw new Error(error.message);
+    if (category !== "all") {
+      editorialQuery = editorialQuery.eq("category", category);
+      communityQuery = communityQuery.eq("category", category);
+    }
+    const [editorialResult, communityResult] = await Promise.all([editorialQuery, communityQuery]);
+    if (editorialResult.error ?? communityResult.error) {
+      throw new Error((editorialResult.error ?? communityResult.error)?.message);
+    }
 
-    const events = data ?? [];
+    const editorialEvents = editorialResult.data ?? [];
+    const communityEvents = (communityResult.data ?? []) as CommunityEvent[];
+    const events = [
+      ...editorialEvents,
+      ...communityEvents.map((event) => ({
+        ...event,
+        venue_name: null,
+        address: "Zona scelta dall'organizzatore",
+        source: "community",
+        crowd_forecast_score: plannedCrowdScore(event, now),
+      })),
+    ].sort((left, right) => new Date(left.start_at).getTime() - new Date(right.start_at).getTime()).slice(0, limit);
     console.log("EVENTS READ COMPLETATO", { count: events.length, window, category });
     return jsonResponse({ ok: true, count: events.length, window, category, events });
   } catch (error) {

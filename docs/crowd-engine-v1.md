@@ -1,8 +1,8 @@
-# Crowd Engine V1
+# Crowd Engine V2 — osservazioni e storico
 
 ## Scope
 
-Crowd Engine V1 produces one current estimate for every active Milan place without making provider calls. It combines the last usable BestTime cache entry, an event contribution, and a deterministic category/day/hour fallback. Raw inputs are stored in `crowd_signals`; the public map reads only aggregate rows in `crowd_estimates` through `places-read`.
+Il motore usa il dato BestTime live fresco o la telemetria LIVE CITY aggregata come valore corrente. Quando nessuno dei due è disponibile, può produrre una previsione soltanto dallo storico di osservazioni reali dello stesso luogo, nella stessa ora e giorno locale. Non esiste più un profilo fisso per categoria.
 
 The remote schema inspected on 22 September 2026 contained 101 places, 42 mapping rows, 19 cache rows, one event, and empty `crowd_signals`/`crowd_estimates` tables. The migration therefore completes the existing prototype tables in place and retains their legacy columns.
 
@@ -10,27 +10,27 @@ The remote schema inspected on 22 September 2026 contained 101 places, 42 mappin
 
 For each place:
 
-1. Generate a Europe/Rome category/hour baseline with confidence `0.30` and weight `0.35`. The editable configuration is `TEMPORAL_PROFILES` in `_shared/crowd-engine.ts`.
-2. If the cached BestTime score is finite and in `0...100`, add it as the main signal. A cache row that has not expired has weight `1.0`; an expired row decays from `0.55` and is discarded after 24 hours. `999`, null, closed/unavailable values, invalid timestamps, and out-of-range values are ignored.
-3. An active directly linked event adds 18 points. An event starting within four hours adds 4–12 points according to proximity. For an event without `place_id`, geographic matching first looks for the same category within 250 metres; an exact-neighbour fallback may then match any category within 120 metres. Geographic boosts and confidence are reduced by 45%.
-4. Compute the weighted mean of BestTime and temporal signals, then add event boosts. Combined event contribution is capped at 25 points. Clamp the result to `0...100`.
+1. Se il cached BestTime è finito, disponibile e fresco, è il segnale live principale. Una riga scaduta pesa meno e viene scartata dopo 24 ore. `999`, null, chiuso o valori invalidi vengono ignorati.
+2. La telemetria opt-in contribuisce solo sopra 5 sessioni aggregate e nella finestra di freschezza.
+3. Senza segnale live, `crowd_historical_slots` fornisce una previsione solo con almeno 12 osservazioni reali in 3 giorni, per il medesimo luogo/ora/giorno Europe/Rome.
+4. Un evento aggiunge un boost prudente. La stima combina i segnali disponibili, senza mai generare un valore da un profilo generico.
 5. Derive activity: `low < 25`, `medium < 50`, `high < 75`, otherwise `very_high`.
 6. Compare with the previous estimate: `up` at `+8` or more, `down` at `-8` or less, otherwise `stable`.
 
-A result without a usable BestTime signal is marked `metadata.isFallback = true` and never presented as live data. Every estimate records its signal contributions and formula version in metadata. Estimates expire after 30 minutes.
+Una previsione storica è marcata `metadata.isFallback = true`; se non c'è né live né storico idoneo, è marcata `metadata.isUnavailable = true` e il client restituisce “Dato non disponibile”. Ogni stima registra contributi e versione formula. Le stime scadono dopo 30 minuti.
 
-## Verified rollout (22 September 2026)
+## Provenienza verificabile
 
-- The additive migration was applied to the live project and RLS is enabled on both Crowd Engine tables.
-- A live refresh read 101 places, wrote 101 temporal signals, and upserted 101 current estimates.
-- None of the 19 mapped BestTime cache rows was still usable, so all 101 results were honestly marked as low-confidence fallback estimates.
-- The public `places-read` endpoint returned HTTP 200 with 101 places, 101 available estimates, and zero unavailable places.
-- `events-read` returned the active `LIVE CITY Test Night` event at the Darsena. Its `place_id` is null and no catalogue place falls inside the conservative geographic matching radius, so it remains visible on the map without being incorrectly attributed to a venue score.
+- La tabella cache conserva `observation_mode`: solo `live` viene trasformato in un segnale BestTime corrente.
+- `forecast` e `unknown` vengono esclusi sia dal motore sia dal fallback dell'API pubblica. Le righe cache preesistenti partono da `unknown`.
+- L'adapter `crowd-refresh` deve scrivere `observation_mode = 'live'` soltanto dopo una risposta riuscita dall'endpoint BestTime Live; una risposta forecast deve scrivere `forecast` o essere ignorata.
+- Le tabelle `crowd_historical_slots` sono alimentate unicamente da segnali `observed` BestTime Live e telemetria LIVE CITY aggregata, deduplicati per sorgente e timestamp. Non ricevono previsioni o eventi.
 
 ## Failure behaviour
 
 - The refresh function never contacts BestTime, so quota exhaustion and provider downtime cannot prevent a refresh.
-- Missing, invalid, `999`, or older-than-24-hours provider rows fall back to the temporal profile.
+- Missing, invalid, `999`, forecast, unknown, or older-than-24-hours provider rows are ignored.
+- In their absence the engine may use only a sufficiently sampled observed-history slot; otherwise it returns unavailable.
 - Stale provider rows retain their original observation time and receive reduced weight/confidence.
 - An event cannot independently force a score to 100.
 - A failed database read or write returns a non-2xx response and does not claim success.
@@ -47,16 +47,28 @@ A result without a usable BestTime signal is marked `metadata.isFallback = true`
 - `crowdDataState` (`fresh`, `stale`, `fallback`, `unavailable`)
 - `signalCount`
 
-During rollout, a usable row from `venue_crowd_cache` remains the fallback if no engine estimate exists. The iPhone UI translates technical provenance into only `Dato live`, `Stima`, or `Dato non disponibile`.
+During rollout, only a usable `observation_mode = 'live'` row from `venue_crowd_cache` can be used if no engine estimate exists. The iPhone UI translates technical provenance into only `Dato live`, `Stima`, or `Dato non disponibile`.
 
 ## Deployment order
 
-1. Apply `supabase/migrations/202609220001_crowd_engine_v1.sql`.
-2. Deploy `crowd-engine-refresh`, `places-read`, and `events-read`.
-3. Optionally configure `CROWD_ENGINE_REFRESH_SECRET` for scheduled refreshes. Never expose it to Expo. Calls must also satisfy the function's JWT setting; a service-role bearer token is accepted directly.
-4. Invoke `crowd-engine-refresh` once and confirm `stats.placesRead = 101` and `stats.estimatesWritten = 101`.
-5. Call `places-read` with the publishable key and confirm all 101 places have a score, with fallback estimates clearly marked.
-6. Schedule the refresh about every 30 minutes after the deployment is verified.
+1. Apply `supabase/migrations/202609220001_crowd_engine_v1.sql` and `supabase/migrations/202609230005_observed_history_predictions.sql`.
+2. Update the provider adapter so that only BestTime Live responses write `observation_mode = 'live'`; keep its quota at 100 priority venues/hour.
+3. Deploy `crowd-engine-refresh` and `places-read`, then invoke the engine once.
+4. Confirm engine stats distinguish `bestTimeSignals`, `telemetrySignals`, `historicalPredictionSignals`, and unavailable estimates.
+5. After at least 12 observed samples across 3 days in the same slot, confirm a historical prediction is labelled `Stima`; otherwise confirm the API returns `Dato non disponibile`.
+
+## BestTime Live adapter
+
+`crowd-refresh` calls `POST https://besttime.app/api/v1/forecasts/live` server-side with an existing `venue_id`. It accepts a score only when `analysis.venue_live_busyness_available = true` and writes that row with `observation_mode = 'live'` and a one-hour expiry. The related forecast value is deliberately discarded.
+
+The function requires `BESTTIME_PRIVATE_API_KEY` only in Supabase Edge Function secrets; it must never be copied into Expo variables or the client. It accepts only service-role calls from `crowd-pipeline-refresh`, enforces a limit of 100 venue requests, and reads the highest `venue_mappings.live_priority` rows first.
+
+The map renders up to 30 individual places per category (150 at most with
+`Tutti`). Presentation and provider capacity are intentionally separate: the
+priority migration reserves 20 BestTime Live requests per category, keeping
+the hourly provider budget at 100. The remaining visible places can show only
+LIVE CITY aggregate telemetry, a clearly labelled historical prediction, or
+`Dato non disponibile`.
 
 ## Next architecture slice
 
