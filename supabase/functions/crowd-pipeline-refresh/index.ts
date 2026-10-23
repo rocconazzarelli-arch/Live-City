@@ -56,10 +56,16 @@ Deno.serve(async (request) => {
 
     const baseUrl = requiredEnv("SUPABASE_URL");
     const serviceRoleKey = requiredEnv("SUPABASE_SERVICE_ROLE_KEY");
-    const body = await request.json().catch(() => ({})) as { forceProvider?: boolean };
+    const body = await request.json().catch(() => ({})) as {
+      forceProvider?: boolean;
+      forceWeather?: boolean;
+    };
     // The pipeline itself runs every 20 minutes, while BestTime live data is
     // refreshed only once per clock hour. A signed manual caller may force it.
-    const providerRefreshDue = body.forceProvider === true || new Date().getUTCMinutes() < 5;
+    const firstRunOfHour = new Date().getUTCMinutes() < 5;
+    const providerRefreshDue = body.forceProvider === true || firstRunOfHour;
+    // Open-Meteo data is hourly, so one weather refresh per hour is enough.
+    const weatherRefreshDue = body.forceWeather === true || firstRunOfHour;
     const providerPromise = providerRefreshDue
       ? callFunction(baseUrl, serviceRoleKey, "crowd-refresh", {
           dryRun: false,
@@ -72,22 +78,36 @@ Deno.serve(async (request) => {
           ok: true,
           body: { skipped: true, reason: "BestTime refresh is hourly" },
         });
-    const [provider, telemetry] = await Promise.all([
+    const weatherPromise = weatherRefreshDue
+      ? callFunction(baseUrl, serviceRoleKey, "weather-ingest", { mode: "recent" })
+      : Promise.resolve({
+          status: 204,
+          ok: true,
+          body: { skipped: true, reason: "Weather refresh is hourly" },
+        });
+    const [provider, telemetry, weather] = await Promise.all([
       providerPromise,
       // Aggregate the coarse privacy cells immediately before recalculating
       // estimates. This replaces the old, non-existent `crowd-aggregate`
       // dependency and makes the 20-minute pipeline deterministic: only
       // k-anonymous area snapshots can reach the crowd engine.
       callFunction(baseUrl, serviceRoleKey, "area-heatmap-refresh", {}),
+      // A network or quota failure must not reject the whole batch.
+      weatherPromise.catch((error) => ({
+        status: 502,
+        ok: false,
+        body: { error: error instanceof Error ? error.message : "Weather ingest failed" },
+      })),
     ]);
 
-    // Provider or telemetry failures must never stop the hybrid estimate refresh.
+    // Provider, telemetry or weather failures must never stop the hybrid estimate refresh.
     const engine = await callFunction(baseUrl, serviceRoleKey, "crowd-engine-refresh", {});
     const status = engine.ok ? 200 : 502;
     return json({
       ok: engine.ok,
       provider,
       telemetry,
+      weather,
       engine,
       durationMs: Date.now() - startedAt,
     }, status);

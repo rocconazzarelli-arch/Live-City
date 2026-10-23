@@ -32,3 +32,6 @@ verify_jwt = false
 
 [functions.mobility-source-refresh]
 verify_jwt = false
+
+[functions.weather-ingest]
+verify_jwt = false
