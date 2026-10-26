@@ -1,5 +1,13 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 
+import type { PlaceCategory } from "../_shared/crowd-engine.ts";
+import {
+  calculateWeatherImpact,
+  type WeatherCrowdProfileInput,
+  type WeatherForecastInput,
+  weatherAdjustedScore,
+} from "../_shared/weather-crowd-model.ts";
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -34,7 +42,7 @@ type PlaceRow = {
   fsq_place_id: string;
   name: string;
   address: string | null;
-  category: string;
+  category: PlaceCategory;
   latitude: number;
   longitude: number;
   catalog_source: string;
@@ -83,6 +91,7 @@ type ForecastSlot = {
   localWeekday: number;
   localHour: number;
   label: string;
+  targetAt: string;
 };
 
 function nextRomeForecastSlots(now: Date): ForecastSlot[] {
@@ -112,6 +121,7 @@ function nextRomeForecastSlots(now: Date): ForecastSlot[] {
       localWeekday: weekdays[weekday] ?? 1,
       localHour: hour,
       label: `${String(hour).padStart(2, "0")}:00`,
+      targetAt: new Date(Math.floor(date.getTime() / 3_600_000) * 3_600_000).toISOString(),
     };
   });
 }
@@ -140,7 +150,14 @@ Deno.serve(async (request) => {
     });
     const now = new Date();
     const forecastSlots = nextRomeForecastSlots(now);
-    const [placesResult, mappingsResult, estimatesResult, historicalResult] = await Promise.all([
+    const [
+      placesResult,
+      mappingsResult,
+      estimatesResult,
+      historicalResult,
+      weatherResult,
+      weatherProfilesResult,
+    ] = await Promise.all([
       supabase
         .from("places")
         .select("id, fsq_place_id, name, address, category, latitude, longitude, catalog_source")
@@ -157,14 +174,25 @@ Deno.serve(async (request) => {
         .select("place_id, local_weekday, local_hour, average_score, sample_count, distinct_days")
         .in("local_weekday", [...new Set(forecastSlots.map((slot) => slot.localWeekday))])
         .in("local_hour", [...new Set(forecastSlots.map((slot) => slot.localHour))]),
+      supabase
+        .from("weather_observations")
+        .select("observed_at, apparent_temperature_c, precipitation_mm, rain_mm, wind_speed_kmh, sunshine_duration_s, weather_code, data_kind")
+        .eq("location_key", "milano")
+        .in("observed_at", forecastSlots.map((slot) => slot.targetAt)),
+      supabase
+        .from("weather_crowd_profiles")
+        .select("scope_type, scope_key, place_id, category, daypart, rain_delta, rain_samples, heavy_rain_delta, heavy_rain_samples, hot_delta, hot_samples, cold_delta, cold_samples, strong_wind_delta, strong_wind_samples, pleasant_delta, pleasant_samples, sample_count, distinct_days, confidence"),
     ]);
-    const readError = placesResult.error ?? mappingsResult.error ?? estimatesResult.error ?? historicalResult.error;
+    const readError = placesResult.error ?? mappingsResult.error ?? estimatesResult.error ??
+      historicalResult.error ?? weatherResult.error ?? weatherProfilesResult.error;
     if (readError) throw new Error(readError.message);
 
     const places = (placesResult.data ?? []) as PlaceRow[];
     const mappings = (mappingsResult.data ?? []) as MappingRow[];
     const estimates = (estimatesResult.data ?? []) as EstimateRow[];
     const historicalSlots = (historicalResult.data ?? []) as HistoricalSlotRow[];
+    const weatherRows = (weatherResult.data ?? []) as WeatherForecastInput[];
+    const weatherProfiles = (weatherProfilesResult.data ?? []) as WeatherCrowdProfileInput[];
     const venueIds = mappings
       .map((mapping) => mapping.besttime_venue_id)
       .filter((venueId): venueId is string => Boolean(venueId));
@@ -185,9 +213,10 @@ Deno.serve(async (request) => {
         slot,
       ]),
     );
-    const crowdForecastFor = (placeId: number) => forecastSlots.flatMap((slot) => {
+    const weatherByHour = new Map(weatherRows.map((row) => [row.observed_at, row]));
+    const crowdForecastFor = (place: PlaceRow) => forecastSlots.flatMap((slot) => {
       const historical = historicalByPlaceAndSlot.get(
-        `${placeId}:${slot.localWeekday}:${slot.localHour}`,
+        `${place.id}:${slot.localWeekday}:${slot.localHour}`,
       );
       if (
         !historical ||
@@ -196,12 +225,33 @@ Deno.serve(async (request) => {
         !validScore(historical.average_score)
       ) return [];
 
+      const baselineScore = Math.round(historical.average_score);
+      const weather = weatherByHour.get(slot.targetAt);
+      const impact = weather
+        ? calculateWeatherImpact(place.id, place.category, slot.localHour, weather, weatherProfiles)
+        : null;
+      const baseConfidence = forecastConfidence(historical);
+      const confidence = !impact || impact.source === "neutral"
+        ? baseConfidence
+        : impact.source === "learned_place" && baseConfidence === "high" && impact.confidence >= 0.65
+        ? "high"
+        : impact.source !== "cold_start" && baseConfidence !== "low"
+        ? "medium"
+        : "low";
+
       return [{
         time: slot.label,
-        score: Math.round(historical.average_score),
-        confidence: forecastConfidence(historical),
+        targetAt: slot.targetAt,
+        score: impact ? weatherAdjustedScore(baselineScore, impact) : baselineScore,
+        baselineScore,
+        confidence,
         sampleCount: historical.sample_count,
         distinctDays: historical.distinct_days,
+        weatherAdjustment: impact?.delta ?? 0,
+        weatherSummary: impact?.summary ?? "Meteo non disponibile",
+        weatherModel: impact?.source ?? null,
+        weatherDataKind: impact?.dataKind ?? null,
+        weatherConfidence: impact?.confidence ?? null,
       }];
     });
     const nowMs = now.getTime();
@@ -245,7 +295,7 @@ Deno.serve(async (request) => {
           crowdIsFallback: false,
           crowdDataState: "unavailable",
           signalCount: 0,
-          crowdForecast: crowdForecastFor(place.id),
+          crowdForecast: crowdForecastFor(place),
         };
       }
 
@@ -284,7 +334,7 @@ Deno.serve(async (request) => {
           crowdIsFallback: fallback,
           crowdDataState: fallback ? "fallback" : stale ? "stale" : "fresh",
           signalCount: estimate.signal_count,
-          crowdForecast: crowdForecastFor(place.id),
+          crowdForecast: crowdForecastFor(place),
         };
       }
 
@@ -321,7 +371,7 @@ Deno.serve(async (request) => {
           crowdIsFallback: false,
           crowdDataState: stale ? "stale" : "fresh",
           signalCount: 1,
-          crowdForecast: crowdForecastFor(place.id),
+          crowdForecast: crowdForecastFor(place),
         };
       }
 
@@ -349,7 +399,7 @@ Deno.serve(async (request) => {
         crowdIsFallback: false,
         crowdDataState: "unavailable",
         signalCount: 0,
-        crowdForecast: crowdForecastFor(place.id),
+        crowdForecast: crowdForecastFor(place),
       };
     });
 
@@ -362,6 +412,8 @@ Deno.serve(async (request) => {
       forecastEstimateCount: available.filter((place) => place.crowdIsFallback).length,
       staleEstimateCount: available.filter((place) => place.crowdDataState === "stale").length,
       unavailableCrowdCount: resultPlaces.length - available.length,
+      weatherForecastHoursRead: weatherRows.length,
+      weatherProfilesRead: weatherProfiles.length,
     };
 
     console.log("PLACES READ COMPLETATO", { strategy, ...stats });

@@ -84,6 +84,19 @@ L'API gratuita di Open-Meteo è riservata all'uso non commerciale (con limiti gi
 
 Con 300 luoghi, `crowd_history` cresce di circa 21.600 righe al giorno (circa 8 milioni l'anno), gestibili con l'indice per `bucket_start`. Oltre qualche decina di milioni di righe conviene partizionare per mese o spostare i mesi chiusi in un archivio per il training.
 
-## Prossimo passo
+## Utilizzo nel modello
 
-Spostare `refresh_crowd_historical_slots()` su `crowd_history`; poi profili attesi per luogo, giorno, ora, meteo e calendario; rilevazione delle anomalie (osservato − atteso); celle H3 e clustering delle aggregazioni.
+La migrazione `202610270016_weather_adjusted_forecasts.sql` completa il passo
+successivo:
+
+- `refresh_crowd_historical_slots()` legge ora lo storico durevole e non i
+  segnali con retention breve;
+- il residuo `osservato − baseline luogo/giorno/ora` viene associato al meteo
+  realmente osservato;
+- `weather_crowd_profiles` conserva effetti gerarchici per categoria e luogo;
+- `places-read` applica il forecast meteo soltanto alle previsioni +1h, +2h e
+  +3h, mostrando separatamente baseline e correzione.
+
+I profili si aggiornano ogni notte. Fino al raggiungimento delle soglie minime
+vengono usati prior conservativi per categoria, sempre etichettati come
+`cold_start`.

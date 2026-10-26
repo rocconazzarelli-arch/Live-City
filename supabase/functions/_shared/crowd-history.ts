@@ -22,6 +22,8 @@ export type CrowdHistoryRow = {
   besttime_stale: boolean | null;
   telemetry_score: number | null;
   telemetry_sessions: number | null;
+  mastercard_score: number | null;
+  mastercard_transactions: number | null;
   event_boost: number;
   event_count: number;
   signal_count: number;
@@ -51,7 +53,9 @@ export function buildHistoryRows(
       const historical = placeSignals.find((signal) => signal.kind === "historical");
       const bestTime = placeSignals.find((signal) => signal.kind === "besttime");
       const telemetry = placeSignals.find((signal) => signal.kind === "telemetry");
+      const mastercard = placeSignals.find((signal) => signal.kind === "mastercard");
       const sessions = telemetry?.metadata.confirmedSessions;
+      const transactions = mastercard?.metadata.transactionCount;
 
       return {
         place_id: estimate.placeId,
@@ -70,6 +74,8 @@ export function buildHistoryRows(
         besttime_stale: bestTime ? bestTime.metadata.stale === true : null,
         telemetry_score: telemetry?.score ?? null,
         telemetry_sessions: typeof sessions === "number" ? sessions : null,
+        mastercard_score: mastercard?.score ?? null,
+        mastercard_transactions: typeof transactions === "number" ? transactions : null,
         event_boost: Number(estimate.metadata.eventBoost ?? 0),
         event_count: placeSignals.filter((signal) => signal.kind === "event").length,
         signal_count: estimate.signalCount,

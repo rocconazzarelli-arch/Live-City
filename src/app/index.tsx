@@ -69,10 +69,17 @@ type CrowdDataState =
 
 type CrowdForecastPoint = {
   time: string;
+  targetAt?: string;
   score: number;
+  baselineScore?: number;
   confidence: CrowdConfidence;
   sampleCount: number;
   distinctDays: number;
+  weatherAdjustment?: number;
+  weatherSummary?: string;
+  weatherModel?: 'learned_place' | 'learned_category' | 'cold_start' | 'neutral' | null;
+  weatherDataKind?: 'forecast' | 'analysis' | 'reanalysis' | null;
+  weatherConfidence?: number | null;
 };
 
 type Place = {
@@ -2243,6 +2250,27 @@ export function LiveCityMapScreen({
                       <Text style={styles.crowdForecastConfidence}>
                         {getForecastConfidenceLabel(forecast.confidence)}
                       </Text>
+                      {forecast.weatherSummary && (
+                        <View style={styles.crowdForecastWeatherRow}>
+                          <MaterialCommunityIcons
+                            name={
+                              (forecast.weatherAdjustment ?? 0) < 0
+                                ? 'weather-pouring'
+                                : (forecast.weatherAdjustment ?? 0) > 0
+                                  ? 'weather-partly-cloudy'
+                                  : 'weather-cloudy'
+                            }
+                            size={10}
+                            color="#666666"
+                          />
+                          <Text style={styles.crowdForecastWeather} numberOfLines={2}>
+                            {forecast.weatherSummary}
+                            {(forecast.weatherAdjustment ?? 0) !== 0
+                              ? ` ${(forecast.weatherAdjustment ?? 0) > 0 ? '+' : ''}${forecast.weatherAdjustment}`
+                              : ''}
+                          </Text>
+                        </View>
+                      )}
                     </View>
                   ))}
                 </View>
@@ -3257,6 +3285,24 @@ const styles =
       fontSize: 9,
       fontWeight: '600',
       marginTop: 2,
+    },
+
+    crowdForecastWeatherRow: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      gap: 3,
+      marginTop: 5,
+      paddingTop: 5,
+      borderTopWidth: 1,
+      borderTopColor: '#E8E8E8',
+    },
+
+    crowdForecastWeather: {
+      flex: 1,
+      color: '#666666',
+      fontSize: 8,
+      lineHeight: 10,
+      fontWeight: '700',
     },
 
     crowdForecastEmpty: {

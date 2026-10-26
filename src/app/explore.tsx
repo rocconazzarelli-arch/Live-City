@@ -142,7 +142,7 @@ export default function ExploreScreen() {
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Come leggere la mappa</Text>
           <View style={styles.explainerRow}><View style={[styles.legendDot, { backgroundColor: '#1B9B5D' }]} /><Text style={styles.explainer}>Dato live: osservazione BestTime disponibile o presenze LIVE CITY aggregate.</Text></View>
-          <View style={styles.explainerRow}><View style={[styles.legendDot, { backgroundColor: '#D67B00' }]} /><Text style={styles.explainer}>Stima: previsione calcolata esclusivamente da osservazioni reali storicizzate.</Text></View>
+          <View style={styles.explainerRow}><View style={[styles.legendDot, { backgroundColor: '#D67B00' }]} /><Text style={styles.explainer}>Stima: baseline da osservazioni reali storicizzate, corretta per le prossime ore dal meteo previsto. Il meteo non è una presenza live.</Text></View>
           <View style={styles.explainerRow}><View style={[styles.legendDot, { backgroundColor: '#9AA2AA' }]} /><Text style={styles.explainer}>Non disponibile: non esiste un segnale affidabile da mostrare.</Text></View>
         </View>
 

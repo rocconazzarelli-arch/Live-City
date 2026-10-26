@@ -40,6 +40,9 @@ Deno.serve(async (request) => {
       telemetryResult,
       mastercardSnapshotResult,
       mastercardMappingsResult,
+      weatherAnalysisResult,
+      weatherForecastResult,
+      weatherProfilesResult,
     ] = await Promise.all([
       supabase.from("places").select("id", { count: "exact", head: true }).eq("is_active", true),
       supabase.from("crowd_estimates").select("calculated_at:calculated_at").order("calculated_at", { ascending: false }).limit(1),
@@ -79,6 +82,25 @@ Deno.serve(async (request) => {
         .from("mastercard_merchant_mappings")
         .select("id", { count: "exact", head: true })
         .eq("is_active", true),
+      supabase
+        .from("weather_observations")
+        .select("observed_at, fetched_at, data_kind")
+        .eq("location_key", "milano")
+        .in("data_kind", ["analysis", "reanalysis"])
+        .lte("observed_at", new Date().toISOString())
+        .order("observed_at", { ascending: false })
+        .limit(1),
+      supabase
+        .from("weather_observations")
+        .select("observed_at, fetched_at, data_kind")
+        .eq("location_key", "milano")
+        .eq("data_kind", "forecast")
+        .gte("observed_at", new Date().toISOString())
+        .order("observed_at", { ascending: true })
+        .limit(1),
+      supabase
+        .from("weather_crowd_profiles")
+        .select("scope_key", { count: "exact", head: true }),
     ]);
 
     // Health reporting must remain readable even if one non-critical metric is
@@ -94,6 +116,9 @@ Deno.serve(async (request) => {
       ["telemetry", telemetryResult.error],
       ["mastercard_snapshots", mastercardSnapshotResult.error],
       ["mastercard_mappings", mastercardMappingsResult.error],
+      ["weather_analysis", weatherAnalysisResult.error],
+      ["weather_forecast", weatherForecastResult.error],
+      ["weather_profiles", weatherProfilesResult.error],
     ];
     const diagnostics = queryErrors.flatMap(([source, error]) =>
       error ? [{ source, error: error.message || "Query failed without a message" }] : [],
@@ -125,6 +150,14 @@ Deno.serve(async (request) => {
         optedInObservationsLast24h: telemetryResult.count ?? 0,
       },
       forecasts: { eligibleHistoricalSlots: forecastSlotResult.count ?? 0 },
+      weather: {
+        latestObservedHour: weatherAnalysisResult.data?.[0]?.observed_at ?? null,
+        nextForecastHour: weatherForecastResult.data?.[0]?.observed_at ?? null,
+        lastFetchedAt: weatherForecastResult.data?.[0]?.fetched_at ??
+          weatherAnalysisResult.data?.[0]?.fetched_at ?? null,
+        learnedProfiles: weatherProfilesResult.count ?? 0,
+        role: "future_forecast_adjustment_only",
+      },
       mastercard: {
         activeMerchantMappings: mastercardMappingsResult.count ?? 0,
         latestAggregateAt: latestMastercardSnapshot?.window_end ?? null,
