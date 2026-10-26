@@ -39,6 +39,7 @@ configurazione è versionata in `supabase/config.toml`.
 ```text
 Foursquare -> places -------------------------------> places-read
 BestTime -> crowd_observations -> crowd_estimates --┤
+Mastercard consented transactions -> 20m aggregates -┤
 opt-in location -> area snapshots -> estimates -----┤-> app map
 mobility + events + hybrid history -> hybrid estimates
 ```

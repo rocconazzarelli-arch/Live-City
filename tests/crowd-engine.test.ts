@@ -2,6 +2,7 @@ import {
   assignEventsToPlaces,
   buildBestTimeSignal,
   buildHistoricalSignal,
+  buildMastercardTransactionSignal,
   buildMobilitySignal,
   buildTelemetrySignal,
   calculateEstimate,
@@ -9,6 +10,8 @@ import {
   type CrowdCacheInput,
   type EventInput,
   type HistoricalSlotInput,
+  type MastercardTransactionProfileInput,
+  type MastercardTransactionSnapshotInput,
   type PlaceInput,
   type PresenceProfileInput,
   type PresenceSnapshotInput,
@@ -94,6 +97,86 @@ Deno.test("BestTime forecasts and unclassified cache rows are never treated as l
     buildBestTimeSignal(1, { ...cache, observation_mode: "unknown" }, now) === null,
     "legacy cache without provenance must not be passed off as live",
   );
+});
+
+Deno.test("Mastercard requires an aggregate of at least five approved transactions", () => {
+  const now = new Date("2026-10-26T18:20:00.000Z");
+  const snapshot: MastercardTransactionSnapshotInput = {
+    place_id: 1,
+    window_start: "2026-10-26T18:00:00.000Z",
+    window_end: "2026-10-26T18:20:00.000Z",
+    transaction_count: 4,
+    source_coverage: 0.35,
+  };
+  assert(
+    buildMastercardTransactionSignal(1, snapshot, null, now) === null,
+    "small payment aggregates must not become a crowd signal",
+  );
+});
+
+Deno.test("Mastercard transactions are normalized against the venue profile", () => {
+  const now = new Date("2026-10-26T18:20:00.000Z");
+  const snapshot: MastercardTransactionSnapshotInput = {
+    place_id: 1,
+    window_start: "2026-10-26T18:00:00.000Z",
+    window_end: "2026-10-26T18:20:00.000Z",
+    transaction_count: 20,
+    source_coverage: 0.45,
+  };
+  const profile: MastercardTransactionProfileInput = {
+    place_id: 1,
+    p25_transaction_count: 5,
+    p50_transaction_count: 10,
+    p75_transaction_count: 20,
+    p90_transaction_count: 30,
+    max_transaction_count: 45,
+    sample_count: 80,
+    distinct_days: 12,
+    confidence: 0.8,
+  };
+  const signal = buildMastercardTransactionSignal(1, snapshot, profile, now);
+  assert(signal?.kind === "mastercard", "expected Mastercard transaction signal");
+  assert(signal.score === 72, `expected venue p75 score 72, received ${signal.score}`);
+  assert(signal.weight < 1, "transaction activity must not overpower verified presence");
+  assert(
+    signal.metadata.normalizedWithVenueProfile === true,
+    "mature per-venue normalization must be auditable",
+  );
+});
+
+Deno.test("BestTime and Mastercard both contribute to the fused score", () => {
+  const now = new Date("2026-10-26T18:20:00.000Z");
+  const bestTime = buildBestTimeSignal(1, {
+    besttime_venue_id: "venue",
+    crowd_score: 80,
+    confidence: "high",
+    fetched_at: "2026-10-26T18:15:00.000Z",
+    expires_at: "2026-10-26T19:15:00.000Z",
+    observation_mode: "live",
+  }, now);
+  const mastercard = buildMastercardTransactionSignal(1, {
+    place_id: 1,
+    window_start: "2026-10-26T18:00:00.000Z",
+    window_end: "2026-10-26T18:20:00.000Z",
+    transaction_count: 20,
+    source_coverage: 0.45,
+  }, {
+    place_id: 1,
+    p25_transaction_count: 5,
+    p50_transaction_count: 10,
+    p75_transaction_count: 20,
+    p90_transaction_count: 30,
+    max_transaction_count: 45,
+    sample_count: 80,
+    distinct_days: 12,
+    confidence: 0.8,
+  }, now);
+  assert(bestTime !== null && mastercard !== null, "both provider signals are required");
+  const estimate = calculateEstimate(1, [bestTime, mastercard], null, now);
+  assert(estimate.score > mastercard.score, "BestTime must raise the lower transaction proxy");
+  assert(estimate.score < bestTime.score, "Mastercard must lower the higher BestTime signal");
+  assert(estimate.metadata.dataClass === "verified_live", "fresh BestTime keeps verified-live status");
+  assert(estimate.signalCount === 2, "both signals must be represented in the estimate");
 });
 
 Deno.test("direct active event adds a controlled boost and produces an upward trend", () => {

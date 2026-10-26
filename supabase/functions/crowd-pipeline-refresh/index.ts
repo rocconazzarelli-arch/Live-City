@@ -72,22 +72,29 @@ Deno.serve(async (request) => {
           ok: true,
           body: { skipped: true, reason: "BestTime refresh is hourly" },
         });
-    const [provider, telemetry] = await Promise.all([
+    const [provider, telemetry, mastercard] = await Promise.all([
       providerPromise,
       // Aggregate the coarse privacy cells immediately before recalculating
       // estimates. This replaces the old, non-existent `crowd-aggregate`
       // dependency and makes the 20-minute pipeline deterministic: only
       // k-anonymous area snapshots can reach the crowd engine.
       callFunction(baseUrl, serviceRoleKey, "area-heatmap-refresh", {}),
+      // Mastercard Transaction Notifications are first reduced to a
+      // k-anonymous per-venue count. Raw payment events never reach the crowd
+      // engine and this adapter remains optional when no production feed is
+      // configured.
+      callFunction(baseUrl, serviceRoleKey, "mastercard-transaction-refresh", {}),
     ]);
 
-    // Provider or telemetry failures must never stop the hybrid estimate refresh.
+    // Provider, transaction-proxy or telemetry failures must never stop the
+    // estimate refresh; the engine can continue from the remaining signals.
     const engine = await callFunction(baseUrl, serviceRoleKey, "crowd-engine-refresh", {});
     const status = engine.ok ? 200 : 502;
     return json({
       ok: engine.ok,
       provider,
       telemetry,
+      mastercard,
       engine,
       durationMs: Date.now() - startedAt,
     }, status);

@@ -30,7 +30,17 @@ Deno.serve(async (request) => {
       auth: { persistSession: false, autoRefreshToken: false },
     });
 
-    const [catalogResult, estimateResult, liveCacheResult, areaResult, providerRunResult, forecastSlotResult, telemetryResult] = await Promise.all([
+    const [
+      catalogResult,
+      estimateResult,
+      liveCacheResult,
+      areaResult,
+      providerRunResult,
+      forecastSlotResult,
+      telemetryResult,
+      mastercardSnapshotResult,
+      mastercardMappingsResult,
+    ] = await Promise.all([
       supabase.from("places").select("id", { count: "exact", head: true }).eq("is_active", true),
       supabase.from("crowd_estimates").select("calculated_at:calculated_at").order("calculated_at", { ascending: false }).limit(1),
       supabase
@@ -60,6 +70,15 @@ Deno.serve(async (request) => {
         .select("id", { count: "exact", head: true })
         .eq("consent_version", "2026-10-private-beta-1")
         .gte("observed_at", new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()),
+      supabase
+        .from("mastercard_transaction_snapshots")
+        .select("window_end, transaction_count")
+        .order("window_end", { ascending: false })
+        .limit(1),
+      supabase
+        .from("mastercard_merchant_mappings")
+        .select("id", { count: "exact", head: true })
+        .eq("is_active", true),
     ]);
 
     // Health reporting must remain readable even if one non-critical metric is
@@ -73,6 +92,8 @@ Deno.serve(async (request) => {
       ["provider_runs", providerRunResult.error],
       ["forecast_slots", forecastSlotResult.error],
       ["telemetry", telemetryResult.error],
+      ["mastercard_snapshots", mastercardSnapshotResult.error],
+      ["mastercard_mappings", mastercardMappingsResult.error],
     ];
     const diagnostics = queryErrors.flatMap(([source, error]) =>
       error ? [{ source, error: error.message || "Query failed without a message" }] : [],
@@ -83,6 +104,7 @@ Deno.serve(async (request) => {
     const latestAreaAt = areaResult.data?.[0]?.window_end ?? null;
     const latestEstimateAt = estimateResult.data?.[0]?.calculated_at ?? null;
     const latestProviderRun = providerRunResult.data?.[0] ?? null;
+    const latestMastercardSnapshot = mastercardSnapshotResult.data?.[0] ?? null;
 
     return json({
       success: true,
@@ -103,6 +125,15 @@ Deno.serve(async (request) => {
         optedInObservationsLast24h: telemetryResult.count ?? 0,
       },
       forecasts: { eligibleHistoricalSlots: forecastSlotResult.count ?? 0 },
+      mastercard: {
+        activeMerchantMappings: mastercardMappingsResult.count ?? 0,
+        latestAggregateAt: latestMastercardSnapshot?.window_end ?? null,
+        latestTransactionCount: latestMastercardSnapshot?.transaction_count ?? null,
+        aggregateFresh: latestMastercardSnapshot?.window_end
+          ? now - new Date(latestMastercardSnapshot.window_end).getTime() <= 40 * 60 * 1000
+          : false,
+        dataClass: "transaction_proxy",
+      },
     });
   } catch (error) {
     return json({

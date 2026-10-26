@@ -5,6 +5,9 @@ affollamento a Milano. Il progetto mantiene due strategie di crowd estimation
 separate e confrontabili:
 
 - **BestTime**: provider esterno, telemetria aggregata e storico osservato;
+- **Mastercard transaction proxy**: conteggi aggregati e consentiti per locale,
+  normalizzati sullo storico dello stesso esercente e mai presentati come
+  conteggio di persone (vedi `docs/mastercard-transaction-crowd.md`);
 - **Hybrid**: telemetria LIVE CITY, mobilità programmata, eventi e storico,
   senza dipendere da BestTime.
 

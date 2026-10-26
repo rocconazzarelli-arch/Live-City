@@ -93,6 +93,7 @@ type Place = {
   relativeToNormal: number | null;
   confidence: CrowdConfidence | null;
   crowdSource: string | null;
+  crowdSources: string[];
   crowdUpdatedAt: string | null;
   crowdValidUntil: string | null;
   crowdIsFallback: boolean;
@@ -332,6 +333,8 @@ function getCrowdDataLabel(
     return 'Dato non disponibile';
   }
 
+  if (place.crowdSource === 'mastercard') return 'Stima transazioni';
+
   if (place.crowdIsFallback || place.crowdDataState === 'fallback') return 'Previsione';
 
   if (place.crowdDataState === 'stale') return 'Dato precedente';
@@ -355,8 +358,26 @@ function getCrowdProvenance(
       : 'Osservazione precedente: aggiornamento in attesa';
   }
 
+  if (
+    place.crowdSources.includes('besttime') &&
+    place.crowdSources.includes('mastercard')
+  ) {
+    return 'Fusione BestTime Live + transazioni Mastercard aggregate';
+  }
+
+  if (
+    place.crowdSources.includes('telemetry') &&
+    place.crowdSources.includes('mastercard')
+  ) {
+    return 'Fusione presenze LIVE CITY + transazioni Mastercard aggregate';
+  }
+
   if (place.crowdSource === 'besttime') {
     return 'BestTime Live verificato';
+  }
+
+  if (place.crowdSource === 'mastercard') {
+    return 'Transazioni Mastercard aggregate · proxy, non conteggio persone';
   }
 
   if (place.crowdSource === 'live_city' || place.crowdSource === 'telemetry') {
@@ -643,6 +664,7 @@ export function LiveCityMapScreen({
                 | CrowdConfidence
                 | null;
               crowdSource?: string | null;
+              crowdSources?: string[];
               crowdUpdatedAt?: string | null;
               crowdValidUntil?: string | null;
               crowdIsFallback?: boolean;
@@ -714,6 +736,11 @@ export function LiveCityMapScreen({
               crowdSource:
                 place.crowdSource ??
                 null,
+
+              crowdSources:
+                (place.crowdSources ?? []).filter(
+                  (source) => typeof source === 'string',
+                ),
 
               crowdUpdatedAt:
                 place.crowdUpdatedAt ??
@@ -1857,7 +1884,7 @@ export function LiveCityMapScreen({
           <Text style={styles.strategyPillText}>
             {crowdStrategy === 'hybrid'
               ? 'Hybrid · telemetria + mobilità + eventi + storico'
-              : 'BestTime · provider + telemetria + storico'}
+              : 'Crowd Fusion · BestTime + transazioni + telemetria'}
           </Text>
         </View>
 

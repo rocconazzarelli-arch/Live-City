@@ -239,6 +239,7 @@ Deno.serve(async (request) => {
           trend: null,
           confidence: null,
           crowdSource: null,
+          crowdSources: [],
           crowdUpdatedAt: estimate.calculated_at,
           crowdValidUntil: estimate.valid_until,
           crowdIsFallback: false,
@@ -251,6 +252,14 @@ Deno.serve(async (request) => {
       if (estimate && usableEstimate && validScore(estimate.score)) {
         const fallback = estimate.metadata?.isFallback === true;
         const stale = estimateValidUntil < nowMs;
+        const rawContributions = Array.isArray(estimate.metadata?.contributions)
+          ? estimate.metadata.contributions
+          : [];
+        const crowdSources = [...new Set(rawContributions.flatMap((contribution) => {
+          if (!contribution || typeof contribution !== "object") return [];
+          const kind = (contribution as Record<string, unknown>).kind;
+          return typeof kind === "string" ? [kind] : [];
+        }))];
         return {
           id: place.id,
           fsqPlaceId: place.fsq_place_id,
@@ -269,6 +278,7 @@ Deno.serve(async (request) => {
           trend: estimate.trend,
           confidence: confidenceLabel(estimate.confidence),
           crowdSource: estimate.dominant_source,
+          crowdSources,
           crowdUpdatedAt: estimate.calculated_at,
           crowdValidUntil: estimate.valid_until,
           crowdIsFallback: fallback,
@@ -305,6 +315,7 @@ Deno.serve(async (request) => {
           trend: cache.trend,
           confidence: confidenceLabel(cache.confidence),
           crowdSource: "legacy_cache",
+          crowdSources: ["besttime"],
           crowdUpdatedAt: cache.fetched_at,
           crowdValidUntil: cache.expires_at,
           crowdIsFallback: false,
@@ -332,6 +343,7 @@ Deno.serve(async (request) => {
         trend: null,
         confidence: null,
         crowdSource: null,
+        crowdSources: [],
         crowdUpdatedAt: null,
         crowdValidUntil: null,
         crowdIsFallback: false,

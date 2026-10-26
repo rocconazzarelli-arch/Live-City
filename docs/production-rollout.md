@@ -22,6 +22,9 @@ Il deploy è deliberatamente separato dal client: senza un access token Supabase
 Impostare solo nei secret Supabase, mai in `.env` del client:
 
 - `BESTTIME_PRIVATE_API_KEY` — chiave privata BestTime;
+- `MASTERCARD_INGEST_SECRET` — autentica il gateway Mastercard verificato;
+- `MASTERCARD_TRANSACTION_HASH_SALT` — pseudonimizza i riferimenti delle
+  transazioni prima della persistenza temporanea;
 - `CROWD_PIPELINE_SECRET` — segreto usato dal job pianificato;
 - variabili standard `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY` gestite dall'ambiente Edge Function.
 
