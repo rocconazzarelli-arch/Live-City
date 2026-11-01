@@ -9,7 +9,7 @@
 | Trasparenza | `src/app/explore.tsx` | Salute delle fonti e spiegazione privacy |
 | Social | `src/app/social.tsx` | Sessione, follow reciproco, chat, blocchi e report |
 | Client social | `src/lib/social-client.ts` | Autenticazione e chiamate Supabase social |
-| Heatmap demo | `src/features/map/demo-heatmap.ts` | Dataset fittizio isolato e solo development |
+| Zone focus | `src/features/map/focus-zones/` | Picchi di affluenza, isoipse, nomi e filtro per attività; campo fittizio `demo-crowd-field.ts` solo development |
 
 `src/app/index.tsx` è ancora una schermata ampia. Le nuove funzionalità non
 devono aumentarne ulteriormente le responsabilità: estrarre progressivamente
