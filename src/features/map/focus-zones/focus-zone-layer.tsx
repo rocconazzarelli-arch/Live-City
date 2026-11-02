@@ -9,13 +9,29 @@ const STROKE_OPACITY = 0.95;
 const STROKE_WIDTH = 1.5;
 
 /** Isolines of the focus zones, lowest level first so inner levels stack on top. */
-export function FocusZoneLayer({ contours }: { contours: readonly FocusContour[] }) {
-  return contours.map((contour) => <FocusContourPolygon key={contour.id} contour={contour} />);
+export function FocusZoneLayer({
+  contours,
+  onPressContour,
+}: {
+  contours: readonly FocusContour[];
+  onPressContour?: (contour: FocusContour) => void;
+}) {
+  return contours.map((contour) => (
+    <FocusContourPolygon key={contour.id} contour={contour} onPress={onPressContour} />
+  ));
 }
 
-const FocusContourPolygon = memo(function FocusContourPolygon({ contour }: { contour: FocusContour }) {
+const FocusContourPolygon = memo(function FocusContourPolygon({
+  contour,
+  onPress,
+}: {
+  contour: FocusContour;
+  onPress?: (contour: FocusContour) => void;
+}) {
   return (
     <Polygon
+      tappable={onPress !== undefined}
+      onPress={onPress ? () => onPress(contour) : undefined}
       coordinates={contour.coordinates}
       holes={contour.holes.length > 0 ? contour.holes : undefined}
       fillColor={rgba(contour.color, FILL_OPACITY[contour.levelIndex])}

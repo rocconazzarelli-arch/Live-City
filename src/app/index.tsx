@@ -1,7 +1,7 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import * as Crypto from 'expo-crypto';
 import * as Location from 'expo-location';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Keyboard,
@@ -15,9 +15,15 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import MapView, { Circle, Marker } from 'react-native-maps';
+import MapView, {
+  Circle,
+  Marker,
+  type Camera,
+  type MKPointOfInterestCategoryType,
+} from 'react-native-maps';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { AreaViewOverlay } from '@/features/map/area-view/area-view-overlay';
 import { gridFromScoredPoints } from '@/features/map/focus-zones/crowd-grid';
 import { generateDemoCrowdField } from '@/features/map/focus-zones/demo-crowd-field';
 import { FocusZoneLayer } from '@/features/map/focus-zones/focus-zone-layer';
@@ -25,6 +31,8 @@ import {
   buildFocusZones,
   FOCUS_DETAIL,
   focusDetailForZoom,
+  type FocusContour,
+  type FocusPeak,
   type FocusZones,
 } from '@/features/map/focus-zones/focus-zones';
 import { loadSocialSession } from '@/lib/social-client';
@@ -253,6 +261,20 @@ const FOCUS_TAG_MAX_LATITUDE_DELTA = 0.04;
 // snapped to tiles so that small pans reuse the same computation.
 const FOCUS_VIEWPORT_MARGIN = 0.75;
 const FOCUS_TILE_DEGREES = { district: 0.01, street: 0.004 } as const;
+// 3D area view: tilted camera close enough for Apple Maps to draw buildings.
+const AREA_VIEW_CAMERA = { pitch: 62, headingOffset: 25, altitude: 650, zoom: 17.2 } as const;
+const AREA_VIEW_ENTER_MS = 1600;
+// Apple Maps points of interest kept on the map: only orientation landmarks.
+// Shops and venues would compete with LIVE CITY's own markers and zones.
+const MAP_POINTS_OF_INTEREST: MKPointOfInterestCategoryType[] = [
+  'landmark',
+  'nationalMonument',
+  'castle',
+  'museum',
+  'park',
+  'publicTransport',
+];
+const AREA_VIEW_EXIT_MS = 1200;
 const EMPTY_FOCUS_ZONES: FocusZones = { peaks: [], contours: [] };
 
 const LOCATION_MIN_SEND_INTERVAL_MS = 5 * 60 * 1000;
@@ -594,6 +616,13 @@ export function LiveCityMapScreen({
 
   const [mapRegion, setMapRegion] =
     useState(MILAN_REGION);
+
+  const [focusedArea, setFocusedArea] =
+    useState<FocusPeak | null>(null);
+
+  const mapRef = useRef<MapView | null>(null);
+
+  const cameraBeforeAreaViewRef = useRef<Camera | null>(null);
 
   const [demoClock, setDemoClock] =
     useState(() => new Date());
@@ -1466,6 +1495,48 @@ export function LiveCityMapScreen({
     setSelectedCategory(category);
   };
 
+  /* =======================================================
+     3D AREA VIEW
+  ======================================================= */
+
+  const enterAreaView = useCallback(async (peak: FocusPeak) => {
+    const map = mapRef.current;
+    if (!map) return;
+    setSelectedPlace(null);
+    setSelectedEvent(null);
+    const current = await map.getCamera();
+    cameraBeforeAreaViewRef.current = current;
+    setFocusedArea(peak);
+    map.animateCamera(
+      {
+        center: { latitude: peak.latitude, longitude: peak.longitude },
+        pitch: AREA_VIEW_CAMERA.pitch,
+        heading: (current.heading ?? 0) + AREA_VIEW_CAMERA.headingOffset,
+        altitude: AREA_VIEW_CAMERA.altitude,
+        zoom: AREA_VIEW_CAMERA.zoom,
+      },
+      { duration: AREA_VIEW_ENTER_MS },
+    );
+  }, []);
+
+  const exitAreaView = useCallback(() => {
+    const previous = cameraBeforeAreaViewRef.current;
+    setFocusedArea(null);
+    if (previous) {
+      mapRef.current?.animateCamera({ ...previous, pitch: 0 }, { duration: AREA_VIEW_EXIT_MS });
+    }
+  }, []);
+
+  const handleFocusContourPress = useCallback((contour: FocusContour) => {
+    // Peaks are sorted from the highest: open the strongest named gathering
+    // inside this isoline (a secondary spot opens the place it belongs to).
+    const inside = focusZones.peaks.filter((peak) => contour.peakIds.includes(peak.id));
+    const target = inside.find((peak) => peak.isPrimary)
+      ?? focusZones.peaks.find((peak) => peak.isPrimary && peak.name === inside[0]?.name)
+      ?? inside[0];
+    if (target) void enterAreaView(target);
+  }, [focusZones, enterAreaView]);
+
   const handleDisplayModeChange = (mode: MapDisplayMode) => {
     setSelectedPlace(null);
     setSelectedEvent(null);
@@ -1479,8 +1550,14 @@ export function LiveCityMapScreen({
   return (
     <View style={styles.container}>
       <MapView
+        ref={mapRef}
         style={StyleSheet.absoluteFill}
         initialRegion={MILAN_REGION}
+        // Dark only in the 3D area view; otherwise follow the system setting.
+        userInterfaceStyle={focusedArea ? 'dark' : undefined}
+        showsBuildings
+        pitchEnabled
+        pointsOfInterestFilter={MAP_POINTS_OF_INTEREST}
         mapType={
           Platform.OS === 'ios' && showHeatmap
             ? 'mutedStandard'
@@ -1493,13 +1570,14 @@ export function LiveCityMapScreen({
           setMapRegion(region);
         }}
       >
-        <FocusZoneLayer contours={focusZones.contours} />
+        <FocusZoneLayer contours={focusZones.contours} onPressContour={handleFocusContourPress} />
 
         {showFocusTags && focusZones.peaks.filter((peak) => peak.isPrimary).map((peak) => (
           <Marker
             key={`focus-tag-${peak.id}`}
             coordinate={{ latitude: peak.latitude, longitude: peak.longitude }}
             anchor={{ x: 0.5, y: 0.5 }}
+            onPress={() => void enterAreaView(peak)}
             tracksViewChanges={false}
             zIndex={900}
           >
@@ -1670,370 +1748,381 @@ export function LiveCityMapScreen({
         )}
       </MapView>
 
-      <SafeAreaView
-        pointerEvents="box-none"
-        style={
-          styles.safeArea
-        }
-      >
-        <View
+      {focusedArea && (
+        <AreaViewOverlay
+          peak={focusedArea}
+          accentColor={focusedArea.activity ? categoryConfig[focusedArea.activity].color : '#F1424E'}
+          isSimulation={DEMO_HEATMAP_ENABLED}
+          onClose={exitAreaView}
+        />
+      )}
+
+      {!focusedArea && (
+        <SafeAreaView
+          pointerEvents="box-none"
           style={
-            styles.topRow
+            styles.safeArea
           }
         >
           <View
             style={
-              styles.cityPill
+              styles.topRow
             }
           >
-            <MaterialCommunityIcons
-              name="map-marker"
-              size={17}
-              color="#111111"
-            />
-
-            <Text
+            <View
               style={
-                styles.cityText
+                styles.cityPill
               }
             >
-              Milano
-            </Text>
+              <MaterialCommunityIcons
+                name="map-marker"
+                size={17}
+                color="#111111"
+              />
+
+              <Text
+                style={
+                  styles.cityText
+                }
+              >
+                Milano
+              </Text>
+            </View>
+
+            <View
+              style={
+                styles.topActions
+              }
+            >
+              <Pressable
+                accessibilityLabel="Mostra la modalita Zone affollate"
+                onPress={() => handleDisplayModeChange('crowd')}
+                style={[styles.iconButton, showHeatmap && styles.iconButtonActive]}
+              >
+                <MaterialCommunityIcons
+                  name="blur"
+                  size={22}
+                  color={showHeatmap ? '#FFFFFF' : '#111111'}
+                />
+              </Pressable>
+
+              <Pressable
+                accessibilityLabel="Mostra la modalita Luoghi"
+                onPress={() => handleDisplayModeChange('places')}
+                style={[styles.iconButton, showPlaceMarkers && styles.iconButtonActive]}
+              >
+                <MaterialCommunityIcons
+                  name="map-marker-radius-outline"
+                  size={22}
+                  color={showPlaceMarkers ? '#FFFFFF' : '#111111'}
+                />
+              </Pressable>
+
+              <Pressable
+                accessibilityLabel="Contribuisci con la posizione"
+                onPress={handleContributionPress}
+                style={[
+                  styles.iconButton,
+                  contributionEnabled && styles.locationButtonActive,
+                ]}
+              >
+                <MaterialCommunityIcons
+                  name={contributionEnabled ? 'crosshairs-gps' : 'crosshairs'}
+                  size={22}
+                  color={contributionEnabled ? '#FFFFFF' : '#111111'}
+                />
+              </Pressable>
+
+              <Pressable
+                accessibilityLabel="Crea un evento nella zona selezionata"
+                onPress={() => setEventComposerOpen(true)}
+                style={styles.iconButton}
+              >
+                <MaterialCommunityIcons
+                  name="calendar-plus"
+                  size={22}
+                  color="#111111"
+                />
+              </Pressable>
+            </View>
           </View>
 
           <View
             style={
-              styles.topActions
+              styles.timeRow
             }
           >
             <Pressable
-              accessibilityLabel="Mostra la modalita Zone affollate"
-              onPress={() => handleDisplayModeChange('crowd')}
-              style={[styles.iconButton, showHeatmap && styles.iconButtonActive]}
-            >
-              <MaterialCommunityIcons
-                name="blur"
-                size={22}
-                color={showHeatmap ? '#FFFFFF' : '#111111'}
-              />
-            </Pressable>
-
-            <Pressable
-              accessibilityLabel="Mostra la modalita Luoghi"
-              onPress={() => handleDisplayModeChange('places')}
-              style={[styles.iconButton, showPlaceMarkers && styles.iconButtonActive]}
-            >
-              <MaterialCommunityIcons
-                name="map-marker-radius-outline"
-                size={22}
-                color={showPlaceMarkers ? '#FFFFFF' : '#111111'}
-              />
-            </Pressable>
-
-            <Pressable
-              accessibilityLabel="Contribuisci con la posizione"
-              onPress={handleContributionPress}
+              onPress={() =>
+                handleTimeChange(
+                  'now',
+                )
+              }
               style={[
-                styles.iconButton,
-                contributionEnabled && styles.locationButtonActive,
-              ]}
-            >
-              <MaterialCommunityIcons
-                name={contributionEnabled ? 'crosshairs-gps' : 'crosshairs'}
-                size={22}
-                color={contributionEnabled ? '#FFFFFF' : '#111111'}
-              />
-            </Pressable>
-
-            <Pressable
-              accessibilityLabel="Crea un evento nella zona selezionata"
-              onPress={() => setEventComposerOpen(true)}
-              style={styles.iconButton}
-            >
-              <MaterialCommunityIcons
-                name="calendar-plus"
-                size={22}
-                color="#111111"
-              />
-            </Pressable>
-          </View>
-        </View>
-
-        <View
-          style={
-            styles.timeRow
-          }
-        >
-          <Pressable
-            onPress={() =>
-              handleTimeChange(
-                'now',
-              )
-            }
-            style={[
-              styles.timeChip,
-
-              selectedTime ===
-                'now' &&
-                styles.timeChipSelected,
-            ]}
-          >
-            <Text
-              style={[
-                styles.timeChipText,
+                styles.timeChip,
 
                 selectedTime ===
                   'now' &&
-                  styles.timeChipTextSelected,
+                  styles.timeChipSelected,
               ]}
             >
-              Adesso
-            </Text>
-          </Pressable>
+              <Text
+                style={[
+                  styles.timeChipText,
 
-          <Pressable
-            onPress={() =>
-              handleTimeChange(
-                'today',
-              )
-            }
-            style={[
-              styles.timeChip,
+                  selectedTime ===
+                    'now' &&
+                    styles.timeChipTextSelected,
+                ]}
+              >
+                Adesso
+              </Text>
+            </Pressable>
 
-              selectedTime ===
-                'today' &&
-                styles.timeChipSelected,
-            ]}
-          >
-            <Text
+            <Pressable
+              onPress={() =>
+                handleTimeChange(
+                  'today',
+                )
+              }
               style={[
-                styles.timeChipText,
+                styles.timeChip,
 
                 selectedTime ===
                   'today' &&
-                  styles.timeChipTextSelected,
+                  styles.timeChipSelected,
               ]}
             >
-              Oggi
-            </Text>
-          </Pressable>
+              <Text
+                style={[
+                  styles.timeChipText,
 
-          <Pressable
-            onPress={() =>
-              handleTimeChange(
-                'week',
-              )
-            }
-            style={[
-              styles.timeChip,
+                  selectedTime ===
+                    'today' &&
+                    styles.timeChipTextSelected,
+                ]}
+              >
+                Oggi
+              </Text>
+            </Pressable>
 
-              selectedTime ===
-                'week' &&
-                styles.timeChipSelected,
-            ]}
-          >
-            <Text
+            <Pressable
+              onPress={() =>
+                handleTimeChange(
+                  'week',
+                )
+              }
               style={[
-                styles.timeChipText,
+                styles.timeChip,
 
                 selectedTime ===
                   'week' &&
-                  styles.timeChipTextSelected,
+                  styles.timeChipSelected,
               ]}
             >
-              Settimana
-            </Text>
-          </Pressable>
-        </View>
+              <Text
+                style={[
+                  styles.timeChipText,
 
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={
-            false
-          }
-          contentContainerStyle={
-            styles.categoryScroll
-          }
-        >
-          <Pressable
-            onPress={() =>
-              handleCategoryChange(
-                'all',
-              )
+                  selectedTime ===
+                    'week' &&
+                    styles.timeChipTextSelected,
+                ]}
+              >
+                Settimana
+              </Text>
+            </Pressable>
+          </View>
+
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={
+              false
             }
-            style={[
-              styles.categoryChip,
-
-              selectedCategory ===
-                'all' &&
-                styles.categoryChipSelected,
-            ]}
+            contentContainerStyle={
+              styles.categoryScroll
+            }
           >
-            <Text
+            <Pressable
+              onPress={() =>
+                handleCategoryChange(
+                  'all',
+                )
+              }
               style={[
-                styles.categoryChipText,
+                styles.categoryChip,
 
                 selectedCategory ===
                   'all' &&
-                  styles.categoryChipTextSelected,
+                  styles.categoryChipSelected,
               ]}
             >
-              Tutti
-            </Text>
-          </Pressable>
+              <Text
+                style={[
+                  styles.categoryChipText,
 
-          {(
-            Object.keys(
-              categoryConfig,
-            ) as PlaceCategory[]
-          ).map(
-            (category) => {
-              const config =
-                categoryConfig[
-                  category
-                ];
+                  selectedCategory ===
+                    'all' &&
+                    styles.categoryChipTextSelected,
+                ]}
+              >
+                Tutti
+              </Text>
+            </Pressable>
 
-              const selected =
-                selectedCategory ===
-                category;
-
-              return (
-                <Pressable
-                  key={
+            {(
+              Object.keys(
+                categoryConfig,
+              ) as PlaceCategory[]
+            ).map(
+              (category) => {
+                const config =
+                  categoryConfig[
                     category
-                  }
-                  onPress={() =>
-                    handleCategoryChange(
-                      category,
-                    )
-                  }
-                  style={[
-                    styles.categoryChip,
+                  ];
 
-                    selected && {
-                      backgroundColor:
-                        config.color,
+                const selected =
+                  selectedCategory ===
+                  category;
 
-                      borderColor:
-                        config.color,
-                    },
-                  ]}
-                >
-                  <MaterialCommunityIcons
-                    name={
-                      config.icon
+                return (
+                  <Pressable
+                    key={
+                      category
                     }
-                    size={16}
-                    color={
-                      selected
-                        ? '#FFFFFF'
-                        : config.color
+                    onPress={() =>
+                      handleCategoryChange(
+                        category,
+                      )
                     }
-                  />
-
-                  <Text
                     style={[
-                      styles.categoryChipText,
+                      styles.categoryChip,
 
-                      selected &&
-                        styles.categoryChipTextSelected,
+                      selected && {
+                        backgroundColor:
+                          config.color,
+
+                        borderColor:
+                          config.color,
+                      },
                     ]}
                   >
-                    {
-                      config.label
-                    }
-                  </Text>
-                </Pressable>
-              );
-            },
-          )}
-        </ScrollView>
+                    <MaterialCommunityIcons
+                      name={
+                        config.icon
+                      }
+                      size={16}
+                      color={
+                        selected
+                          ? '#FFFFFF'
+                          : config.color
+                      }
+                    />
 
-        <View style={styles.strategyPill}>
-          <MaterialCommunityIcons
-            name={crowdStrategy === 'hybrid' ? 'transit-connection-variant' : 'signal'}
-            size={14}
-            color={crowdStrategy === 'hybrid' ? '#0D6D69' : '#4B4B4B'}
-          />
-          <Text style={styles.strategyPillText}>
-            {crowdStrategy === 'hybrid'
-              ? 'Hybrid · telemetria + mobilità + eventi + storico'
-              : 'BestTime · provider + telemetria + storico'}
-          </Text>
-        </View>
+                    <Text
+                      style={[
+                        styles.categoryChipText,
 
-        {loading && (
-          <View
-            style={
-              styles.loadingPill
-            }
-          >
-            <Text
+                        selected &&
+                          styles.categoryChipTextSelected,
+                      ]}
+                    >
+                      {
+                        config.label
+                      }
+                    </Text>
+                  </Pressable>
+                );
+              },
+            )}
+          </ScrollView>
+
+          <View style={styles.strategyPill}>
+            <MaterialCommunityIcons
+              name={crowdStrategy === 'hybrid' ? 'transit-connection-variant' : 'signal'}
+              size={14}
+              color={crowdStrategy === 'hybrid' ? '#0D6D69' : '#4B4B4B'}
+            />
+            <Text style={styles.strategyPillText}>
+              {crowdStrategy === 'hybrid'
+                ? 'Hybrid · telemetria + mobilità + eventi + storico'
+                : 'BestTime · provider + telemetria + storico'}
+            </Text>
+          </View>
+
+          {loading && (
+            <View
               style={
-                styles.loadingText
+                styles.loadingPill
               }
             >
-              Caricamento...
-            </Text>
-          </View>
-        )}
-
-        {!loading && showHeatmap && (
-          <View style={styles.heatLegend}>
-            <View style={styles.heatLegendScale}>
-              <View style={[styles.heatLegendDot, styles.heatLow]} />
-              <View style={[styles.heatLegendDot, styles.heatMedium]} />
-              <View style={[styles.heatLegendDot, styles.heatHigh]} />
+              <Text
+                style={
+                  styles.loadingText
+                }
+              >
+                Caricamento...
+              </Text>
             </View>
-            <Text style={styles.heatLegendText}>
-              {heatmapLabel}
-            </Text>
-          </View>
-        )}
+          )}
 
-        {focusFilterIsEmpty && (
-          <View style={styles.crowdUnavailablePill}>
-            <MaterialCommunityIcons name="map-marker-off-outline" size={15} color="#7B5A00" />
-            <Text style={styles.crowdUnavailableText}>
-              Nessuna zona {categoryConfig[selectedCategory].label.toLowerCase()} in questo momento
-            </Text>
-          </View>
-        )}
+          {!loading && showHeatmap && (
+            <View style={styles.heatLegend}>
+              <View style={styles.heatLegendScale}>
+                <View style={[styles.heatLegendDot, styles.heatLow]} />
+                <View style={[styles.heatLegendDot, styles.heatMedium]} />
+                <View style={[styles.heatLegendDot, styles.heatHigh]} />
+              </View>
+              <Text style={styles.heatLegendText}>
+                {heatmapLabel}
+              </Text>
+            </View>
+          )}
 
-        {showCrowdUnavailableNotice && (
-          <View style={styles.crowdUnavailablePill}>
-            <MaterialCommunityIcons name="signal-cellular-outline" size={15} color="#7B5A00" />
-            <Text style={styles.crowdUnavailableText}>
-              Crowd non disponibile · marker neutri
-            </Text>
-          </View>
-        )}
+          {focusFilterIsEmpty && (
+            <View style={styles.crowdUnavailablePill}>
+              <MaterialCommunityIcons name="map-marker-off-outline" size={15} color="#7B5A00" />
+              <Text style={styles.crowdUnavailableText}>
+                Nessuna zona {categoryConfig[selectedCategory].label.toLowerCase()} in questo momento
+              </Text>
+            </View>
+          )}
 
-        {contributionEnabled && (
-          <View style={styles.contributionPill}>
-            <MaterialCommunityIcons
-              name={
-                contributionStatus === 'active'
-                  ? 'check-circle'
+          {showCrowdUnavailableNotice && (
+            <View style={styles.crowdUnavailablePill}>
+              <MaterialCommunityIcons name="signal-cellular-outline" size={15} color="#7B5A00" />
+              <Text style={styles.crowdUnavailableText}>
+                Crowd non disponibile · marker neutri
+              </Text>
+            </View>
+          )}
+
+          {contributionEnabled && (
+            <View style={styles.contributionPill}>
+              <MaterialCommunityIcons
+                name={
+                  contributionStatus === 'active'
+                    ? 'check-circle'
+                    : contributionStatus === 'error'
+                      ? 'alert-circle-outline'
+                      : 'progress-clock'
+                }
+                size={15}
+                color={contributionStatus === 'error' ? '#B44732' : '#217A52'}
+              />
+              <Text style={styles.contributionText}>
+                {contributionStatus === 'active'
+                  ? `Contributo ricevuto${lastContributionAt ? ` · ${formatCrowdUpdatedAt(lastContributionAt)}` : ''}`
                   : contributionStatus === 'error'
-                    ? 'alert-circle-outline'
-                    : 'progress-clock'
-              }
-              size={15}
-              color={contributionStatus === 'error' ? '#B44732' : '#217A52'}
-            />
-            <Text style={styles.contributionText}>
-              {contributionStatus === 'active'
-                ? `Contributo ricevuto${lastContributionAt ? ` · ${formatCrowdUpdatedAt(lastContributionAt)}` : ''}`
-                : contributionStatus === 'error'
-                  ? 'Contributo non inviato · riproveremo al prossimo fix'
-                  : contributionStatus === 'starting'
-                    ? 'Ricerca della posizione in corso'
-                    : 'Contributo attivo · in attesa del prossimo invio'}
-            </Text>
-          </View>
-        )}
-      </SafeAreaView>
+                    ? 'Contributo non inviato · riproveremo al prossimo fix'
+                    : contributionStatus === 'starting'
+                      ? 'Ricerca della posizione in corso'
+                      : 'Contributo attivo · in attesa del prossimo invio'}
+              </Text>
+            </View>
+          )}
+        </SafeAreaView>
+      )}
 
       <Text style={styles.mapAttribution}>© OpenStreetMap contributors</Text>
 
