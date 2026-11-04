@@ -9,7 +9,6 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "bundleIdentifier": "com.rocconazzarelli.livecity",
-      "buildNumber": "1",
       "config": {
         "usesNonExemptEncryption": false
       }
