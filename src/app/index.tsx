@@ -1,5 +1,4 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import * as Crypto from 'expo-crypto';
 import * as Location from 'expo-location';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -17,7 +16,11 @@ import MapView, { Circle, Marker } from 'react-native-maps';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { DEMO_AREA_HEAT_CELLS } from '@/features/map/demo-heatmap';
-import { loadSocialSession } from '@/lib/social-client';
+import {
+  authenticatedFetch,
+  loadSocialSession,
+  type SocialSession,
+} from '@/lib/social-client';
 
 /* =========================================================
    TYPES
@@ -241,7 +244,7 @@ const DEMO_HEATMAP_ENABLED =
 const LOCATION_MIN_SEND_INTERVAL_MS = 5 * 60 * 1000;
 const LOCATION_MAX_ACCURACY_METERS = 250;
 const CLIENT_REFRESH_INTERVAL_MS = 20 * 60 * 1000;
-const LOCATION_CONSENT_VERSION = '2026-10-private-beta-1';
+const LOCATION_CONSENT_VERSION = '2026-11-private-beta-2';
 const LOCATION_GRID_SIZE = 0.004;
 const MILAN_BOUNDS = {
   south: 45.35,
@@ -600,8 +603,8 @@ export function LiveCityMapScreen({
   const locationSubscriptionRef =
     useRef<Location.LocationSubscription | null>(null);
 
-  const locationSessionIdRef =
-    useRef<string | null>(null);
+  const locationAuthSessionRef =
+    useRef<SocialSession | null>(null);
 
   const lastSentLocationRef = useRef<{ gridKey: string; sentAt: number } | null>(null);
 
@@ -1134,7 +1137,7 @@ export function LiveCityMapScreen({
     locationSubscriptionRef.current?.remove();
     locationSubscriptionRef.current = null;
     lastSentLocationRef.current = null;
-    locationSessionIdRef.current = null;
+    locationAuthSessionRef.current = null;
     setContributionEnabled(false);
     setContributionStatus('idle');
   };
@@ -1173,22 +1176,16 @@ export function LiveCityMapScreen({
       return;
     }
 
-    const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
-    const sessionId = locationSessionIdRef.current;
-    if (!supabaseKey || !sessionId) {
+    const session = locationAuthSessionRef.current;
+    if (!session) {
       setContributionStatus('error');
       return;
     }
 
-    const response = await fetch(SUPABASE_LOCATION_INGEST_URL, {
+    const response = await authenticatedFetch(session, SUPABASE_LOCATION_INGEST_URL, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${supabaseKey}`,
-        apikey: supabaseKey,
-        'Content-Type': 'application/json',
-      },
       body: JSON.stringify({
-        sessionId,
+        action: 'observe',
         // The GPS fix stays on-device. The backend receives only a roughly
         // 440m privacy cell and derives the cell centre server-side.
         gridKey,
@@ -1221,6 +1218,15 @@ export function LiveCityMapScreen({
   };
 
   const startLocationContribution = async () => {
+    const session = await loadSocialSession();
+    if (!session) {
+      Alert.alert(
+        'Accedi alla beta',
+        'Per garantire che cinque sessioni corrispondano a cinque tester reali, accedi prima dalla sezione Amici. La posizione precisa non viene associata al tuo profilo.',
+      );
+      return;
+    }
+
     const permission = await Location.requestForegroundPermissionsAsync();
     if (permission.status !== Location.PermissionStatus.GRANTED) {
       Alert.alert(
@@ -1230,7 +1236,7 @@ export function LiveCityMapScreen({
       return;
     }
 
-    locationSessionIdRef.current = Crypto.randomUUID();
+    locationAuthSessionRef.current = session;
     setContributionEnabled(true);
     setContributionStatus('starting');
 
@@ -1268,15 +1274,36 @@ export function LiveCityMapScreen({
     }
   };
 
+  const revokeLocationContribution = async () => {
+    const session = locationAuthSessionRef.current;
+    stopLocationContribution();
+    if (!session) return;
+    try {
+      const response = await authenticatedFetch(session, SUPABASE_LOCATION_INGEST_URL, {
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'revoke',
+          consentVersion: LOCATION_CONSENT_VERSION,
+        }),
+      });
+      if (!response.ok) throw new Error('Revoca non registrata');
+    } catch {
+      Alert.alert(
+        'Contributo interrotto',
+        'La raccolta sul telefono è stata fermata, ma il server non ha confermato la cancellazione. Riprova quando torni online.',
+      );
+    }
+  };
+
   const handleContributionPress = () => {
     if (contributionEnabled) {
-      stopLocationContribution();
+      void revokeLocationContribution();
       return;
     }
 
     Alert.alert(
       'Contribuisci alla mappa live?',
-      'Se accetti, LIVE CITY usa la posizione solo mentre l’app è aperta. Il telefono invia una zona approssimata, non le coordinate GPS precise, insieme a un identificatore casuale di sessione. Puoi interrompere quando vuoi; le zone diventano visibili solo con almeno 5 persone.',
+      'Se accetti, LIVE CITY usa la posizione solo mentre l’app è aperta. Devi essere autenticato: il server genera uno pseudonimo giornaliero che non contiene il tuo account e riceve soltanto una zona approssimata, mai le coordinate GPS precise. Puoi revocare quando vuoi; le zone diventano visibili solo con almeno 5 tester distinti.',
       [
         { text: 'Non ora', style: 'cancel' },
         {

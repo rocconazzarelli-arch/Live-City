@@ -14,18 +14,26 @@
 
 ## Opt-in location contribution
 
-The map works without location permission. A person must deliberately select
+The map works without location permission. An authenticated beta tester must deliberately select
 **Contribuisci alla mappa live** before the app asks iOS/Android for foreground
 location access.
 
 For the private beta, the mobile client converts each location locally to a
 0.004° grid cell (roughly 440m north/south in Milan) before the network call.
-The endpoint accepts only the cell key, a random per-contribution session ID,
-measurement accuracy, timestamp and consent version. It rejects raw latitude
-and longitude fields. The database stores the cell centre, not the GPS fix.
+The endpoint accepts only the cell key, measurement accuracy, timestamp and
+consent version. It rejects raw latitude and longitude fields. The backend
+verifies the LIVE CITY account and derives a rotating daily HMAC pseudonym:
+the account ID never enters a location row, while one tester cannot fabricate
+multiple sessions for the `k >= 5` threshold. The database stores the cell
+centre, not the GPS fix.
+
+Consent is recorded in the backend using version
+`2026-11-private-beta-2`. Turning contribution off immediately stops the
+foreground watcher, records withdrawal and removes the tester's retained
+pseudonymous observations for today and yesterday.
 
 Raw contribution rows expire within 24 hours. A cell is visible in the heatmap
-only after at least five distinct random sessions contribute in a 20-minute
+only after at least five distinct authenticated, pseudonymous testers contribute in a 20-minute
 window. No client can read raw contribution rows.
 
 ## TestFlight gate
@@ -38,7 +46,9 @@ Before enabling a wider beta:
 2. Verify that `com.rocconazzarelli.livecity` is the intended iOS bundle ID and
    Android package before the first cloud build. Changing it later creates a
    different application identity.
-3. Deploy migration `202610080011_private_beta_privacy_and_observability.sql`
+3. Deploy migrations `202610080011_private_beta_privacy_and_observability.sql`
+   and `202611040018_authenticated_private_beta_telemetry.sql`, configure
+   `LOCATION_SESSION_HASH_SALT`,
    and functions `location-ingest`, `area-heatmap-refresh`, `crowd-pipeline-refresh`,
    `crowd-engine-refresh`, `crowd-refresh`, and `app-health`.
 4. Use a native development build or TestFlight build on physical devices.
@@ -49,6 +59,11 @@ Before enabling a wider beta:
 6. Monitor the `app-health` endpoint and `crowd_provider_runs` for BestTime
    freshness, quota failures, opted-in contribution volume and forecast-ready
    historical slots.
+
+The initial 20–50 people are invited through an internal/TestFlight group.
+This is an operational target, not an automatic claim that all invitees are
+contributing: `app-health.heatmap` reports active consent records and distinct
+contributors in the latest 20-minute window.
 
 ## Build profiles
 

@@ -43,6 +43,8 @@ Deno.serve(async (request) => {
       weatherAnalysisResult,
       weatherForecastResult,
       weatherProfilesResult,
+      betaParticipantsResult,
+      recentContributorsResult,
     ] = await Promise.all([
       supabase.from("places").select("id", { count: "exact", head: true }).eq("is_active", true),
       supabase.from("crowd_estimates").select("calculated_at:calculated_at").order("calculated_at", { ascending: false }).limit(1),
@@ -71,7 +73,7 @@ Deno.serve(async (request) => {
       supabase
         .from("location_observations")
         .select("id", { count: "exact", head: true })
-        .eq("consent_version", "2026-10-private-beta-1")
+        .eq("consent_version", "2026-11-private-beta-2")
         .gte("observed_at", new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()),
       supabase
         .from("mastercard_transaction_snapshots")
@@ -100,7 +102,18 @@ Deno.serve(async (request) => {
         .limit(1),
       supabase
         .from("weather_crowd_profiles")
-        .select("scope_key", { count: "exact", head: true }),
+        .select("scope_key")
+        .limit(1000),
+      supabase
+        .from("private_beta_participants")
+        .select("user_id", { count: "exact", head: true })
+        .eq("status", "active"),
+      supabase
+        .from("location_observations")
+        .select("session_id")
+        .eq("consent_version", "2026-11-private-beta-2")
+        .gte("observed_at", new Date(Date.now() - 20 * 60 * 1000).toISOString())
+        .limit(5000),
     ]);
 
     // Health reporting must remain readable even if one non-critical metric is
@@ -119,6 +132,8 @@ Deno.serve(async (request) => {
       ["weather_analysis", weatherAnalysisResult.error],
       ["weather_forecast", weatherForecastResult.error],
       ["weather_profiles", weatherProfilesResult.error],
+      ["beta_participants", betaParticipantsResult.error],
+      ["recent_contributors", recentContributorsResult.error],
     ];
     const diagnostics = queryErrors.flatMap(([source, error]) =>
       error ? [{ source, error: error.message || "Query failed without a message" }] : [],
@@ -130,6 +145,9 @@ Deno.serve(async (request) => {
     const latestEstimateAt = estimateResult.data?.[0]?.calculated_at ?? null;
     const latestProviderRun = providerRunResult.data?.[0] ?? null;
     const latestMastercardSnapshot = mastercardSnapshotResult.data?.[0] ?? null;
+    const distinctContributorsLast20m = new Set(
+      (recentContributorsResult.data ?? []).map((row) => row.session_id),
+    ).size;
 
     return json({
       success: true,
@@ -148,6 +166,9 @@ Deno.serve(async (request) => {
         aggregateFresh: latestAreaAt !== null && now - new Date(latestAreaAt).getTime() <= 40 * 60 * 1000,
         privacyThreshold: 5,
         optedInObservationsLast24h: telemetryResult.count ?? 0,
+        activeBetaParticipants: betaParticipantsResult.count ?? 0,
+        distinctContributorsLast20m,
+        consentVersion: "2026-11-private-beta-2",
       },
       forecasts: { eligibleHistoricalSlots: forecastSlotResult.count ?? 0 },
       weather: {
@@ -155,7 +176,7 @@ Deno.serve(async (request) => {
         nextForecastHour: weatherForecastResult.data?.[0]?.observed_at ?? null,
         lastFetchedAt: weatherForecastResult.data?.[0]?.fetched_at ??
           weatherAnalysisResult.data?.[0]?.fetched_at ?? null,
-        learnedProfiles: weatherProfilesResult.count ?? 0,
+        learnedProfiles: weatherProfilesResult.data?.length ?? 0,
         role: "future_forecast_adjustment_only",
       },
       mastercard: {

@@ -29,6 +29,8 @@ Impostare solo nei secret Supabase, mai in `.env` del client:
 - `CROWD_PIPELINE_SECRET` — segreto usato dal job pianificato;
 - `OPEN_METEO_API_KEY` — necessario per uso commerciale e backfill sul piano
   Open-Meteo appropriato; in sviluppo la funzione può usare l'endpoint free;
+- `LOCATION_SESSION_HASH_SALT` — almeno 32 caratteri casuali, usato per creare
+  pseudonimi giornalieri non reversibili dei tester autenticati;
 - variabili standard `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY` gestite dall'ambiente Edge Function.
 
 La publishable key resta l'unico valore Supabase nel client. Prima di esporre BestTime, verificare che la pipeline selezioni al massimo 100 venue con `live_priority`, al massimo una volta ogni ora.

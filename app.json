@@ -29,7 +29,7 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Se scegli di contribuire, LIVE CITY usa la posizione solo mentre l'app è aperta per inviare una zona approssimata e anonima utile alla heat map. Puoi interrompere in qualsiasi momento."
+          "locationWhenInUsePermission": "Se scegli di contribuire, LIVE CITY usa la posizione solo mentre l'app è aperta per inviare una zona approssimata associata a uno pseudonimo giornaliero utile alla heat map. Puoi revocare in qualsiasi momento."
         }
       ],
       [
