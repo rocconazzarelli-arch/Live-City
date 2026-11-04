@@ -9,6 +9,7 @@ export type ActivityLevel = "low" | "medium" | "high" | "very_high";
 export type CrowdTrend = "up" | "stable" | "down";
 export type SignalKind =
   | "besttime"
+  | "mastercard"
   | "telemetry"
   | "mobility"
   | "event"
@@ -80,7 +81,28 @@ export type HistoricalSlotInput = {
   sample_count: number;
   distinct_days: number;
   besttime_samples: number;
+  mastercard_samples?: number;
   telemetry_samples: number;
+};
+
+export type MastercardTransactionSnapshotInput = {
+  place_id: number;
+  window_start: string;
+  window_end: string;
+  transaction_count: number;
+  source_coverage: number | null;
+};
+
+export type MastercardTransactionProfileInput = {
+  place_id: number;
+  p25_transaction_count: number;
+  p50_transaction_count: number;
+  p75_transaction_count: number;
+  p90_transaction_count: number;
+  max_transaction_count: number;
+  sample_count: number;
+  distinct_days: number;
+  confidence: number;
 };
 
 export type MobilityProfileInput = {
@@ -96,7 +118,7 @@ export type MobilityProfileInput = {
 
 export type EngineSignal = {
   placeId: number;
-  source: "besttime" | "live_city";
+  source: "besttime" | "mastercard" | "live_city";
   signalType: "observed" | "forecast" | "baseline";
   kind: SignalKind;
   score: number;
@@ -128,6 +150,8 @@ const EVENT_LOOKAHEAD_MS = 4 * HOUR_MS;
 const MAX_GEO_EVENT_DISTANCE_METERS = 250;
 const MAX_TELEMETRY_AGE_MS = 40 * MINUTE_MS;
 const MIN_TELEMETRY_SESSIONS = 5;
+const MAX_MASTERCARD_AGE_MS = 40 * MINUTE_MS;
+const MIN_MASTERCARD_TRANSACTIONS = 5;
 
 export function clamp(value: number, min = 0, max = 100): number {
   return Math.min(max, Math.max(min, value));
@@ -207,6 +231,7 @@ export function buildHistoricalSignal(
       sampleCount: slot.sample_count,
       distinctDays: slot.distinct_days,
       bestTimeSamples: slot.besttime_samples,
+      mastercardSamples: slot.mastercard_samples ?? 0,
       telemetrySamples: slot.telemetry_samples,
     },
   };
@@ -258,6 +283,103 @@ export function buildBestTimeSignal(
       ageMinutes: Math.round(ageMs / MINUTE_MS),
       providerVenueId: cache.besttime_venue_id,
       observationMode: cache.observation_mode,
+    },
+  };
+}
+
+function scoreFromTransactions(
+  count: number,
+  profile: MastercardTransactionProfileInput | null,
+): number {
+  if (!profile || profile.sample_count < 12 || profile.distinct_days < 3) {
+    // A cold-start transaction count is not comparable across venues. Keep
+    // the provisional score conservative until the venue has its own
+    // percentile profile.
+    return clamp(Math.round(12 + 17 * Math.log2(1 + count)), 0, 82);
+  }
+
+  const anchors = [
+    { value: 0, score: 5 },
+    { value: profile.p25_transaction_count, score: 25 },
+    { value: profile.p50_transaction_count, score: 50 },
+    { value: profile.p75_transaction_count, score: 72 },
+    { value: profile.p90_transaction_count, score: 88 },
+    {
+      value: Math.max(profile.max_transaction_count, profile.p90_transaction_count + 1),
+      score: 100,
+    },
+  ].sort((left, right) => left.value - right.value);
+
+  for (let index = 1; index < anchors.length; index += 1) {
+    const lower = anchors[index - 1];
+    const upper = anchors[index];
+    if (count <= upper.value) {
+      if (upper.value === lower.value) return upper.score;
+      const progress = (count - lower.value) / (upper.value - lower.value);
+      return clamp(Math.round(lower.score + progress * (upper.score - lower.score)));
+    }
+  }
+
+  return 100;
+}
+
+export function buildMastercardTransactionSignal(
+  placeId: number,
+  snapshot: MastercardTransactionSnapshotInput | null,
+  profile: MastercardTransactionProfileInput | null,
+  now: Date,
+): EngineSignal | null {
+  if (!snapshot || snapshot.transaction_count < MIN_MASTERCARD_TRANSACTIONS) return null;
+  const windowEnd = new Date(snapshot.window_end).getTime();
+  const ageMs = now.getTime() - windowEnd;
+  if (
+    !Number.isFinite(windowEnd) ||
+    ageMs < -5 * MINUTE_MS ||
+    ageMs > MAX_MASTERCARD_AGE_MS ||
+    !Number.isInteger(snapshot.transaction_count)
+  ) {
+    return null;
+  }
+
+  const matureProfile = Boolean(
+    profile && profile.sample_count >= 12 && profile.distinct_days >= 3,
+  );
+  const freshness = clamp(1 - Math.max(0, ageMs) / MAX_MASTERCARD_AGE_MS, 0.35, 1);
+  // Unknown Mastercard/card-enrolment coverage must remain conservative; a
+  // calibrated commercial coverage ratio can raise confidence later.
+  const coverage = clamp(Number(snapshot.source_coverage ?? 0.2), 0.1, 1);
+  const volumeConfidence = clamp(snapshot.transaction_count / 30, 0.3, 1);
+  const profileConfidence = matureProfile
+    ? clamp(Number(profile?.confidence ?? 0.5), 0.35, 0.9)
+    : 0.4;
+  const confidence = clamp(
+    profileConfidence * (0.65 + 0.35 * volumeConfidence) * (0.7 + 0.3 * coverage) * freshness,
+    0.25,
+    matureProfile ? 0.78 : 0.45,
+  );
+
+  return {
+    placeId,
+    source: "mastercard",
+    signalType: "observed",
+    kind: "mastercard",
+    score: scoreFromTransactions(snapshot.transaction_count, profile),
+    // Card purchases are a useful near-real-time activity proxy, but do not
+    // equal people: cash, other networks, repeat purchases and online orders
+    // prevent a 1:1 conversion. It can complement, never overpower, a fresh
+    // verified BestTime or LIVE CITY presence signal.
+    weight: (matureProfile ? 0.72 : 0.38) * freshness,
+    confidence: Math.round(confidence * 100) / 100,
+    observedAt: snapshot.window_end,
+    validUntil: new Date(windowEnd + MAX_MASTERCARD_AGE_MS).toISOString(),
+    metadata: {
+      sourceMode: "consented_transaction_count_proxy",
+      transactionCount: snapshot.transaction_count,
+      privacyThreshold: MIN_MASTERCARD_TRANSACTIONS,
+      sourceCoverage: coverage,
+      normalizedWithVenueProfile: matureProfile,
+      ageMinutes: Math.max(0, Math.round(ageMs / MINUTE_MS)),
+      disclaimer: "Aggregated payment activity proxy; not a count of people",
     },
   };
 }
@@ -502,9 +624,19 @@ export function calculateEstimate(
   const score = Math.round(clamp(baseScore + eventBoost));
   const bestTime = baseSignals.find((signal) => signal.kind === "besttime");
   const telemetry = baseSignals.find((signal) => signal.kind === "telemetry");
-  const liveSignal = telemetry ?? bestTime;
-  const confidence = liveSignal
-    ? clamp(liveSignal.confidence + (eventSignals.length > 0 ? 0.03 : 0), 0, 0.95)
+  const mastercard = baseSignals.find((signal) => signal.kind === "mastercard");
+  const observedSignals = baseSignals.filter((signal) => signal.signalType === "observed");
+  const observedWeight = observedSignals.reduce((sum, signal) => sum + signal.weight, 0);
+  const observedConfidence = observedWeight > 0
+    ? observedSignals.reduce((sum, signal) => sum + signal.confidence * signal.weight, 0) / observedWeight
+    : null;
+  const hasVerifiedPresence = Boolean(telemetry || bestTime);
+  const confidence = observedConfidence !== null
+    ? clamp(
+        observedConfidence + (eventSignals.length > 0 ? 0.03 : 0),
+        0,
+        hasVerifiedPresence ? 0.95 : 0.7,
+      )
     : clamp(0.3 + (eventSignals.length > 0 ? 0.1 : 0), 0, 0.45);
   const dominantBase = [...baseSignals].sort((a, b) => b.weight - a.weight)[0];
   const dominantSource: SignalKind =
@@ -525,7 +657,14 @@ export function calculateEstimate(
     calculatedAt,
     validUntil,
     metadata: {
-      formulaVersion: "crowd_engine_v2_observed_history",
+      formulaVersion: "crowd_engine_v3_besttime_mastercard",
+      dataClass: hasVerifiedPresence
+        ? "verified_live"
+        : mastercard
+        ? "transaction_proxy"
+        : baseSignals.length > 0 || eventSignals.length > 0
+        ? "forecast"
+        : "unavailable",
       baseScore: Math.round(baseScore * 10) / 10,
       eventBoost,
       isFallback: !bestTime && !telemetry,
@@ -540,6 +679,7 @@ export function calculateEstimate(
         weight: Math.round(signal.weight * 100) / 100,
         confidence: signal.confidence,
         stale: signal.metadata.stale === true,
+        sourceMode: signal.metadata.sourceMode ?? signal.signalType,
       })),
     },
   };

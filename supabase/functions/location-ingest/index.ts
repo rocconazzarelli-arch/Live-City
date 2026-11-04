@@ -1,8 +1,12 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
+import {
+  dailyLocationSessionId,
+  locationRevocationDays,
+} from "../_shared/location-privacy.ts";
 
 const MILAN_BOUNDS = { south: 45.35, north: 45.58, west: 8.98, east: 9.35 };
 const GRID_SIZE = 0.004;
-const TELEMETRY_CONSENT_VERSION = "2026-10-private-beta-1";
+const TELEMETRY_CONSENT_VERSION = "2026-11-private-beta-2";
 const MAX_ACCURACY_METERS = 250;
 const MIN_INTERVAL_MS = 5 * 60 * 1000;
 const MAX_OBSERVATION_AGE_MS = 20 * 60 * 1000;
@@ -22,15 +26,13 @@ function json(body: unknown, status = 200): Response {
 }
 
 type LocationPayload = {
-  sessionId?: unknown;
+  action?: unknown;
   gridKey?: unknown;
   accuracyMeters?: unknown;
   observedAt?: unknown;
   consentVersion?: unknown;
 };
 type LastObservation = { observed_at: string };
-
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function asFiniteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -60,16 +62,50 @@ Deno.serve(async (request) => {
   try {
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-    if (!supabaseUrl || !serviceRoleKey) throw new Error("Supabase backend configuration is incomplete");
+    const sessionHashSalt = Deno.env.get("LOCATION_SESSION_HASH_SALT");
+    if (!supabaseUrl || !serviceRoleKey || !sessionHashSalt) {
+      throw new Error("Supabase backend configuration is incomplete");
+    }
+
+    const authorization = request.headers.get("Authorization") ?? "";
+    const accessToken = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
+    if (!accessToken) return json({ ok: false, error: "Authentication required" }, 401);
+
+    const supabase = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const { data: authData, error: authError } = await supabase.auth.getUser(accessToken);
+    if (authError || !authData.user) return json({ ok: false, error: "Authenticated beta account required" }, 401);
 
     const payload = await request.json() as LocationPayload;
-    const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : "";
+    const action = payload.action === "revoke" ? "revoke" : "observe";
+    const consentVersion = typeof payload.consentVersion === "string" ? payload.consentVersion : "";
+    const nowDate = new Date();
+
+    if (action === "revoke") {
+      const sessionIds = await Promise.all(
+        locationRevocationDays(nowDate).map((day) =>
+          dailyLocationSessionId(authData.user.id, day, sessionHashSalt)
+        ),
+      );
+      const participantUpdate = await supabase
+        .from("private_beta_participants")
+        .update({ status: "withdrawn", revoked_at: nowDate.toISOString(), updated_at: nowDate.toISOString() })
+        .eq("user_id", authData.user.id);
+      if (participantUpdate.error) throw new Error(participantUpdate.error.message);
+      const purge = await supabase
+        .from("location_observations")
+        .delete()
+        .in("session_id", sessionIds)
+        .gte("observed_at", new Date(nowDate.getTime() - 48 * 60 * 60 * 1000).toISOString());
+      if (purge.error) throw new Error(purge.error.message);
+      return json({ ok: true, revoked: true });
+    }
+
     const gridCell = parseGridKey(payload.gridKey);
     const accuracyMeters = payload.accuracyMeters === null ? null : asFiniteNumber(payload.accuracyMeters);
     const observedAt = typeof payload.observedAt === "string" ? new Date(payload.observedAt) : null;
-    const consentVersion = typeof payload.consentVersion === "string" ? payload.consentVersion : "";
 
-    if (!UUID_PATTERN.test(sessionId)) return json({ ok: false, error: "Invalid session" }, 400);
     if (!gridCell) return json({ ok: false, error: "Invalid privacy grid cell" }, 400);
     if (consentVersion !== TELEMETRY_CONSENT_VERSION) return json({ ok: false, error: "Missing consent" }, 403);
     if (accuracyMeters !== null && (accuracyMeters < 0 || accuracyMeters > MAX_ACCURACY_METERS)) {
@@ -77,14 +113,35 @@ Deno.serve(async (request) => {
     }
     if (!observedAt || Number.isNaN(observedAt.getTime())) return json({ ok: false, error: "Invalid observation time" }, 400);
 
-    const now = Date.now();
+    const now = nowDate.getTime();
     if (observedAt.getTime() < now - MAX_OBSERVATION_AGE_MS || observedAt.getTime() > now + MAX_FUTURE_SKEW_MS) {
       return json({ ok: false, error: "Observation time is outside the accepted window" }, 400);
     }
 
-    const supabase = createClient(supabaseUrl, serviceRoleKey, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    });
+    const sessionId = await dailyLocationSessionId(authData.user.id, observedAt, sessionHashSalt);
+    const existingParticipant = await supabase
+      .from("private_beta_participants")
+      .select("status, consent_version, consented_at")
+      .eq("user_id", authData.user.id)
+      .maybeSingle();
+    if (existingParticipant.error) throw new Error(existingParticipant.error.message);
+    const existingConsentTime = existingParticipant.data?.consented_at;
+    const keepExistingConsentTime =
+      existingParticipant.data?.status === "active" &&
+      existingParticipant.data.consent_version === consentVersion &&
+      typeof existingConsentTime === "string";
+    const participant = await supabase.from("private_beta_participants").upsert({
+      user_id: authData.user.id,
+      status: "active",
+      consent_version: consentVersion,
+      consented_at: keepExistingConsentTime
+        ? existingConsentTime
+        : nowDate.toISOString(),
+      revoked_at: null,
+      updated_at: nowDate.toISOString(),
+    }, { onConflict: "user_id" });
+    if (participant.error) throw new Error(participant.error.message);
+
     const previous = await supabase
       .from("location_observations")
       .select("observed_at")
@@ -114,6 +171,12 @@ Deno.serve(async (request) => {
       if (insert.error.code === "23505") return json({ ok: true, accepted: false, reason: "duplicate" }, 202);
       throw new Error(insert.error.message);
     }
+
+    const participantTouch = await supabase
+      .from("private_beta_participants")
+      .update({ last_contribution_at: nowDate.toISOString(), updated_at: nowDate.toISOString() })
+      .eq("user_id", authData.user.id);
+    if (participantTouch.error) throw new Error(participantTouch.error.message);
 
     return json({ ok: true, accepted: true });
   } catch (error) {

@@ -116,7 +116,7 @@ async function refreshSocialSession(session: SocialSession): Promise<SocialSessi
   return refreshInFlight;
 }
 
-async function authenticatedFetch(
+export async function authenticatedFetch(
   session: SocialSession,
   url: string,
   options: RequestInit = {},
