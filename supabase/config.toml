@@ -32,3 +32,12 @@ verify_jwt = false
 
 [functions.mobility-source-refresh]
 verify_jwt = false
+
+[functions.mastercard-transaction-ingest]
+verify_jwt = false
+
+[functions.mastercard-transaction-refresh]
+verify_jwt = false
+
+[functions.weather-ingest]
+verify_jwt = false

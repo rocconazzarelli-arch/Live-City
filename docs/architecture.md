@@ -30,6 +30,7 @@ presentazionali senza cambiare il contratto degli endpoint.
 | `crowd-refresh` | job | Stime da aree/storico |
 | `mobility-source-refresh` | job | Import mobilità programmata |
 | `hybrid-crowd-refresh` | job | Stime senza BestTime |
+| `weather-ingest` | job | Meteo orario Open-Meteo e backfill storico |
 
 Le funzioni client verificano JWT; i job usano segreti server-side. La
 configurazione è versionata in `supabase/config.toml`.
@@ -39,8 +40,10 @@ configurazione è versionata in `supabase/config.toml`.
 ```text
 Foursquare -> places -------------------------------> places-read
 BestTime -> crowd_observations -> crowd_estimates --┤
+Mastercard consented transactions -> 20m aggregates -┤
 opt-in location -> area snapshots -> estimates -----┤-> app map
 mobility + events + hybrid history -> hybrid estimates
+Open-Meteo forecast -> bounded weather correction --> +1h/+2h/+3h forecasts
 ```
 
 Le osservazioni grezze non sono leggibili dal client. La mappa territoriale
@@ -53,3 +56,5 @@ espone soltanto aggregati che superano la soglia privacy configurata.
 3. Le previsioni storiche richiedono almeno 12 osservazioni su 3 giorni.
 4. La heatmap reale richiede almeno 5 sessioni distinte per cella.
 5. La demo è compilata solo in sviluppo e richiede un flag esplicito.
+6. Il meteo modifica solo una previsione futura: non è un segnale di presenza
+   e non può trasformare una stima in dato live.

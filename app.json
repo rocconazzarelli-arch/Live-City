@@ -9,7 +9,9 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "bundleIdentifier": "com.rocconazzarelli.livecity",
-      "buildNumber": "1"
+      "config": {
+        "usesNonExemptEncryption": false
+      }
     },
     "android": {
       "package": "com.rocconazzarelli.livecity",
@@ -18,7 +20,11 @@
         "backgroundColor": "#FFFFFF",
         "foregroundImage": "./assets/images/live-city-icon-bw.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ]
     },
     "web": {
       "output": "static",
@@ -29,7 +35,7 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Se scegli di contribuire, LIVE CITY usa la posizione solo mentre l'app è aperta per inviare una zona approssimata e anonima utile alla heat map. Puoi interrompere in qualsiasi momento."
+          "locationWhenInUsePermission": "Se scegli di contribuire, LIVE CITY usa la posizione solo mentre l'app è aperta per inviare una zona approssimata associata a uno pseudonimo giornaliero utile alla heat map. Puoi revocare in qualsiasi momento."
         }
       ],
       [
@@ -45,6 +51,13 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "e29430c5-038d-418d-b3ed-5a8a9868bead"
+      }
+    },
+    "owner": "rocco_nazzarelli"
   }
 }

@@ -5,8 +5,14 @@ affollamento a Milano. Il progetto mantiene due strategie di crowd estimation
 separate e confrontabili:
 
 - **BestTime**: provider esterno, telemetria aggregata e storico osservato;
+- **Mastercard transaction proxy**: conteggi aggregati e consentiti per locale,
+  normalizzati sullo storico dello stesso esercente e mai presentati come
+  conteggio di persone (vedi `docs/mastercard-transaction-crowd.md`);
 - **Hybrid**: telemetria LIVE CITY, mobilità programmata, eventi e storico,
   senza dipendere da BestTime.
+- **Weather-aware forecast**: la baseline osservata delle prossime tre ore è
+  corretta dal meteo previsto con coefficienti gerarchici luogo/categoria; il
+  meteo non viene mai presentato come osservazione di persone.
 
 La provenienza del dato è parte del prodotto: una stima o un segnale di
 mobilità non vengono mai presentati come presenza live verificata.
@@ -105,6 +111,8 @@ Documentazione di riferimento:
 
 - [`Crowd Engine V1`](docs/crowd-engine-v1.md)
 - [`Strategia Hybrid`](docs/hybrid-crowd-strategy.md)
+- [`Storico feature e meteo`](docs/feature-history-v1.md)
+- [`Previsioni crowd corrette dal meteo`](docs/weather-adjusted-crowd.md)
 - [`Architettura heatmap e geolocalizzazione`](docs/location-heatmap-architecture.md)
 - [`Readiness private beta`](docs/private-beta.md)
 
