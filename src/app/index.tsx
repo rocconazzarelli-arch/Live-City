@@ -27,6 +27,7 @@ import { AreaViewOverlay } from '@/features/map/area-view/area-view-overlay';
 import { gridFromScoredPoints } from '@/features/map/focus-zones/crowd-grid';
 import { generateDemoCrowdField } from '@/features/map/focus-zones/demo-crowd-field';
 import { FocusZoneLayer } from '@/features/map/focus-zones/focus-zone-layer';
+import { gatheringKindLabel } from '@/features/map/focus-zones/gathering-kind';
 import {
   buildFocusZones,
   FOCUS_DETAIL,
@@ -127,6 +128,8 @@ type AreaHeatCell = {
   score: number;
   radius: number;
   distinctSessions: number;
+  /** Share of sessions standing still, 0–1; null below the privacy threshold. */
+  stationaryShare: number | null;
 };
 
 type EventForecastCell = {
@@ -1153,6 +1156,7 @@ export function LiveCityMapScreen({
             score: number;
             radius: number;
             distinctSessions: number;
+            stationaryShare?: number | null;
           }) => ({
             id: cell.id,
             latitude: cell.latitude,
@@ -1160,6 +1164,8 @@ export function LiveCityMapScreen({
             score: cell.score,
             radius: cell.radius,
             distinctSessions: cell.distinctSessions,
+            // Absent until the backend migration is deployed.
+            stationaryShare: typeof cell.stationaryShare === 'number' ? cell.stationaryShare : null,
           })),
         );
         setEventForecastCells(
@@ -1589,7 +1595,10 @@ export function LiveCityMapScreen({
                 ]}
               />
               <Text style={styles.focusTagText} numberOfLines={1}>
-                <Text style={styles.focusTagLabel}>{peak.label}</Text>
+                {/* A street people only walk through is not a place to go to. */}
+                <Text style={styles.focusTagLabel}>
+                  {peak.kind === 'flow' ? gatheringKindLabel(peak.kind) : peak.label}
+                </Text>
                 {` · ${peak.name}`}
               </Text>
             </View>

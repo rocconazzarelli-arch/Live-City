@@ -4,6 +4,7 @@ import Animated, { FadeIn, FadeInDown, FadeOut, FadeOutDown } from 'react-native
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { FOCUS_LEVELS, type FocusPeak } from '@/features/map/focus-zones/focus-zones';
+import { gatheringKindLabel } from '@/features/map/focus-zones/gathering-kind';
 
 /**
  * Chrome of the 3D area view: a back button and a dark glass card describing
@@ -21,6 +22,7 @@ export function AreaViewOverlay({
   isSimulation: boolean;
   onClose: () => void;
 }) {
+  const kindLabel = gatheringKindLabel(peak.kind);
   return (
     <SafeAreaView pointerEvents="box-none" style={StyleSheet.absoluteFill}>
       <Animated.View entering={FadeIn.duration(300).delay(500)} exiting={FadeOut.duration(200)} pointerEvents="box-none">
@@ -61,6 +63,11 @@ export function AreaViewOverlay({
           ))}
           <Text style={styles.levelText}>{crowdLevelLabel(peak.score)}</Text>
         </View>
+        {kindLabel !== null && peak.stationaryShare !== null && (
+          <Text style={styles.kind}>
+            {`${kindLabel} · circa ${Math.round(peak.stationaryShare * 100)}% fermi`}
+          </Text>
+        )}
         <Text style={styles.hint}>Le zone rosse indicano dove la folla è più fitta.</Text>
       </Animated.View>
     </SafeAreaView>
@@ -163,6 +170,12 @@ const styles = StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.86)',
     fontSize: 13,
     fontWeight: '700',
+  },
+
+  kind: {
+    color: 'rgba(255, 255, 255, 0.86)',
+    fontSize: 13,
+    fontWeight: '600',
   },
 
   hint: {
