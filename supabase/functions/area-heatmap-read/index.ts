@@ -1,5 +1,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 
+import { publishableStationaryShare } from "../_shared/stationarity.ts";
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -24,6 +26,8 @@ type AreaSnapshot = {
   window_end: string;
   distinct_sessions: number;
   density_score: number;
+  stationary_sessions: number | null;
+  moving_sessions: number | null;
 };
 
 type CommunityEvent = {
@@ -92,7 +96,7 @@ Deno.serve(async (request) => {
     const [result, eventsResult, mobilityResult] = await Promise.all([
       supabase
       .from("crowd_area_snapshots")
-      .select("grid_key, center_latitude, center_longitude, window_end, distinct_sessions, density_score")
+      .select("grid_key, center_latitude, center_longitude, window_end, distinct_sessions, density_score, stationary_sessions, moving_sessions")
       .gte("window_end", cutoff)
       .gte("distinct_sessions", 5)
       .order("window_end", { ascending: false })
@@ -129,6 +133,9 @@ Deno.serve(async (request) => {
       score: row.density_score,
       radius: 360,
       distinctSessions: row.distinct_sessions,
+      // Share of sessions standing still, or null below the privacy
+      // threshold. The raw counts never leave the backend.
+      stationaryShare: publishableStationaryShare(row.stationary_sessions, row.moving_sessions),
       observedAt: row.window_end,
     }));
     const plannedByGrid = new Map<string, { latitude: number; longitude: number; score: number; eventCount: number; expectedAttendance: number }>();
