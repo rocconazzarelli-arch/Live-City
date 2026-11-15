@@ -35,6 +35,8 @@ type Hotspot = {
   acrossMeters: number;
   /** Direction of the main axis, degrees counter-clockwise from east. */
   angle: number;
+  /** Share of the crowd standing still, 0–1; defaults to the activity's. */
+  still?: number;
 };
 
 type Corridor = {
@@ -51,7 +53,22 @@ const h = (
   alongMeters: number,
   acrossMeters: number,
   angle = 0,
-): Hotspot => ({ activity, latitude, longitude, weight, alongMeters, acrossMeters, angle });
+  still?: number,
+): Hotspot => ({ activity, latitude, longitude, weight, alongMeters, acrossMeters, angle, still });
+
+/**
+ * Typical share of people standing still per activity. Sightseeing crowds mix
+ * people stopping with people walking by; shopping streets override it below.
+ */
+const STILL_SHARE: Record<ZoneActivity, number> = {
+  aperitivo: 0.85,
+  food: 0.9,
+  nightlife: 0.8,
+  outdoor: 0.75,
+  culture: 0.55,
+};
+/** Pedestrian corridors: almost nobody stops. */
+const CORRIDOR_STILL_SHARE = 0.05;
 
 const HOTSPOTS: readonly Hotspot[] = [
   h('aperitivo', 45.4527, 9.1791, 1, 170, 110, 10), // Darsena
@@ -86,10 +103,10 @@ const HOTSPOTS: readonly Hotspot[] = [
   h('outdoor', 45.4777, 9.1553, 0.45, 220, 160), // CityLife
 
   h('culture', 45.4641, 9.1919, 1, 170, 140), // Piazza Duomo
-  h('culture', 45.4659, 9.19, 0.8, 90, 70, 90), // Galleria
-  h('culture', 45.4652, 9.196, 0.75, 260, 60, 22), // Corso Vittorio Emanuele
+  h('culture', 45.4659, 9.19, 0.8, 90, 70, 90, 0.3), // Galleria
+  h('culture', 45.4652, 9.196, 0.75, 260, 60, 22, 0.15), // Corso Vittorio Emanuele
   h('culture', 45.4705, 9.1795, 0.65, 160, 130), // Castello Sforzesco
-  h('culture', 45.4612, 9.1858, 0.55, 300, 60, 50), // Via Torino
+  h('culture', 45.4612, 9.1858, 0.55, 300, 60, 50, 0.15), // Via Torino
   h('culture', 45.4719, 9.188, 0.4, 120, 100), // Pinacoteca di Brera
   h('culture', 45.4447, 9.2044, 0.35, 120, 100), // Fondazione Prada
 ];
@@ -160,6 +177,8 @@ export function generateDemoCrowdField(
     ZONE_ACTIVITIES.map((activity) => [activity, new Float32Array(cellCount)]),
   ) as Record<ZoneActivity, Float32Array>;
   const rawFlow = new Float32Array(cellCount);
+  // People standing still, in the same raw units as the layers.
+  const rawStill = new Float32Array(cellCount);
 
   HOTSPOTS.forEach((hotspot, index) => {
     // ±12% drift every 10 minutes keeps the map alive between refreshes.
@@ -168,12 +187,13 @@ export function generateDemoCrowdField(
     const amplitude = HOTSPOT_AMPLITUDE * hotspot.weight * level * drift;
     if (amplitude < 1) return;
     const target = rawLayers[hotspot.activity];
-    splatGaussian(grid, target, hotspot, amplitude * DIFFUSE_SHARE);
+    const still = { target: rawStill, share: hotspot.still ?? STILL_SHARE[hotspot.activity] };
+    splatGaussian(grid, target, hotspot, amplitude * DIFFUSE_SHARE, SPREAD_SCALE, still);
     for (const lobe of lobesFor(hotspot, index)) {
-      splatGaussian(grid, target, lobe.hotspot, amplitude * DIFFUSE_SHARE * lobe.weight);
+      splatGaussian(grid, target, lobe.hotspot, amplitude * DIFFUSE_SHARE * lobe.weight, SPREAD_SCALE, still);
     }
     for (const group of groupsFor(hotspot, index)) {
-      splatGaussian(grid, target, group.hotspot, amplitude * GROUP_AMPLITUDE * group.weight, 1);
+      splatGaussian(grid, target, group.hotspot, amplitude * GROUP_AMPLITUDE * group.weight, 1, still);
     }
   });
 
@@ -186,6 +206,7 @@ export function generateDemoCrowdField(
   // perfectly elliptical, like real crowds bending around streets.
   const layers: Partial<Record<ZoneActivity, Float32Array>> = {};
   for (const activity of ZONE_ACTIVITIES) layers[activity] = new Float32Array(cellCount);
+  const stationaryShare = new Float32Array(cellCount).fill(Number.NaN);
 
   const textureMetersX = metersPerDegreeLongitude(grid.originLatitude);
   for (let row = 0; row < grid.rows; row += 1) {
@@ -202,10 +223,15 @@ export function generateDemoCrowdField(
         layers[activity]![index] = softClip(raw * texture);
       }
       grid.values[index] = softClip(total * texture);
+      // Too few people to say anything: the share stays unknown.
+      if (total >= 1) {
+        stationaryShare[index] = (rawStill[index] + rawFlow[index] * CORRIDOR_STILL_SHARE) / total;
+      }
     }
   }
 
   grid.layers = layers;
+  grid.stationaryShare = stationaryShare;
   return { grid, localHour, sunsetHour };
 }
 
@@ -260,6 +286,8 @@ function splatGaussian(
   hotspot: Hotspot,
   amplitude: number,
   spreadScale = SPREAD_SCALE,
+  /** Also adds `share` of the splat to `target`: the people standing still. */
+  still?: { target: Float32Array; share: number },
 ) {
   const metersX = metersPerDegreeLongitude(hotspot.latitude);
   const alongMeters = hotspot.alongMeters * spreadScale;
@@ -281,7 +309,9 @@ function splatGaussian(
       const across = -dx * sin + dy * cos;
       const exponent = (along / alongMeters) ** 2 + (across / acrossMeters) ** 2;
       if (exponent > 12) continue;
-      target[row * grid.cols + col] += amplitude * Math.exp(-0.5 * exponent);
+      const value = amplitude * Math.exp(-0.5 * exponent);
+      target[row * grid.cols + col] += value;
+      if (still) still.target[row * grid.cols + col] += value * still.share;
     }
   }
 }

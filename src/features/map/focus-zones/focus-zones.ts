@@ -8,6 +8,7 @@ import {
   type CrowdGrid,
   type ZoneActivity,
 } from './crowd-grid';
+import { classifyGathering, type GatheringKind } from './gathering-kind';
 import { MILAN_LANDMARKS, type Landmark } from './milan-landmarks';
 
 /**
@@ -104,6 +105,8 @@ export function focusDetailForZoom(latitudeDelta: number): FocusDetailLevel {
 const LANDMARK_RADIUS_METERS = 650;
 /** A peak this close to a stronger one is a packed spot of the same gathering. */
 const SECONDARY_PEAK_RADIUS_METERS = 250;
+/** The stationarity of a peak is read from the crowd within this distance. */
+const STATIONARITY_SAMPLE_RADIUS_METERS = 150;
 
 export type FocusPeak = {
   id: string;
@@ -116,6 +119,10 @@ export type FocusPeak = {
   name: string;
   /** Type of gathering at this hour, e.g. "Tramonto". */
   label: string;
+  /** Share of people standing still around the peak, 0–1; null when unknown. */
+  stationaryShare: number | null;
+  /** People staying or people walking through, from `stationaryShare`. */
+  kind: GatheringKind;
   /**
    * False for secondary peaks of an already-named place (several packed spots
    * inside Parco Sempione when zoomed in): the map tags only primary peaks.
@@ -174,6 +181,7 @@ export function buildFocusZones(grid: CrowdGrid, options: FocusZoneOptions = {})
       distanceMeters(latitude, longitude, primary.latitude, primary.longitude) <= SECONDARY_PEAK_RADIUS_METERS);
     const isPrimary = owner === undefined;
     const name = owner?.name ?? nameForLocation(latitude, longitude, usedNames, options.landmarks ?? MILAN_LANDMARKS);
+    const stationaryShare = stationaryShareAround(grid, source, row, col);
     const focusPeak: FocusPeak = {
       id: `peak-${row}-${col}`,
       latitude,
@@ -184,6 +192,8 @@ export function buildFocusZones(grid: CrowdGrid, options: FocusZoneOptions = {})
       activity: peakActivity,
       name,
       label: gatheringLabel(peakActivity, options.localHour, options.sunsetHour),
+      stationaryShare,
+      kind: classifyGathering(stationaryShare),
       isPrimary,
     };
     if (isPrimary) primaries.push(focusPeak);
@@ -224,6 +234,38 @@ export function buildFocusZones(grid: CrowdGrid, options: FocusZoneOptions = {})
   });
 
   return { peaks, contours };
+}
+
+/**
+ * Share of people standing still around a peak: the mean of the grid's
+ * stationarity layer within a short radius, weighted by density so the packed
+ * cells count most. Null when the grid has no stationarity signal there.
+ */
+function stationaryShareAround(grid: CrowdGrid, density: Float32Array, row: number, col: number): number | null {
+  const shares = grid.stationaryShare;
+  if (!shares) return null;
+
+  const cellMetersX = grid.longitudeStep * metersPerDegreeLongitude(grid.originLatitude);
+  const cellMetersY = grid.latitudeStep * METERS_PER_DEGREE_LATITUDE;
+  const radiusCols = Math.floor(STATIONARITY_SAMPLE_RADIUS_METERS / cellMetersX);
+  const radiusRows = Math.floor(STATIONARITY_SAMPLE_RADIUS_METERS / cellMetersY);
+
+  let sum = 0;
+  let weight = 0;
+  for (let dr = -radiusRows; dr <= radiusRows; dr += 1) {
+    for (let dc = -radiusCols; dc <= radiusCols; dc += 1) {
+      const r = row + dr;
+      const c = col + dc;
+      if (r < 0 || c < 0 || r >= grid.rows || c >= grid.cols) continue;
+      if ((dr * cellMetersY) ** 2 + (dc * cellMetersX) ** 2 > STATIONARITY_SAMPLE_RADIUS_METERS ** 2) continue;
+      const share = shares[r * grid.cols + c];
+      const cellDensity = density[r * grid.cols + c];
+      if (Number.isNaN(share) || cellDensity <= 0) continue;
+      sum += share * cellDensity;
+      weight += cellDensity;
+    }
+  }
+  return weight > 0 ? sum / weight : null;
 }
 
 /** Grey-scale dilation: each cell takes the maximum within a disc of `radiusMeters`. */

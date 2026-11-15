@@ -14,6 +14,8 @@ import {
   signedArea,
   traceIsolines,
 } from "../src/features/map/focus-zones/focus-zones.ts";
+import { classifyGathering } from "../src/features/map/focus-zones/gathering-kind.ts";
+import { publishableStationaryShare } from "../supabase/functions/_shared/stationarity.ts";
 
 function assert(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -223,4 +225,60 @@ Deno.test("demo field: Milan sunset is computed in local time", () => {
   // Real sunset in Milan on 30 Oct 2026 is about 17:05 CET.
   assert(field.sunsetHour > 16.6 && field.sunsetHour < 17.4, `sunset ~17:00, got ${field.sunsetHour}`);
   assert(FOCUS_LEVELS.length === 3, "three isoline levels");
+});
+
+Deno.test("stationarity: the share of people standing still names the kind of crowd", () => {
+  assert(classifyGathering(0.85) === "gathering", "most people staying is a gathering");
+  assert(classifyGathering(0.5) === "mixed", "half and half is mixed");
+  assert(classifyGathering(0.1) === "flow", "most people walking is a flow");
+  assert(classifyGathering(null) === "unknown", "no signal is unknown");
+  assert(classifyGathering(Number.NaN) === "unknown", "NaN is unknown, never a flow");
+});
+
+Deno.test("stationarity: a share is published only above the privacy threshold", () => {
+  assert(publishableStationaryShare(4, 0) === null, "4 classified sessions are too few");
+  assert(publishableStationaryShare(null, 6) === null, "rows from before the migration publish nothing");
+  assert(publishableStationaryShare(3, 2) === 0.6, "5 classified sessions are enough");
+  assert(publishableStationaryShare(0, 5) === 0, "everyone walking is a share of zero, not unknown");
+  assert(publishableStationaryShare(7, 6) === 0.55, "shares are rounded to 0.05 steps");
+});
+
+Deno.test("stationarity: backend cells tell a square from a street", () => {
+  const cell = (latitude: number, longitude: number, stationaryShare: number | null) =>
+    ({ latitude, longitude, score: 85, radius: 360, stationaryShare });
+  const zones = buildFocusZones(gridFromScoredPoints([
+    cell(45.4527, 9.1791, 0.9), // Darsena: people staying
+    cell(45.4818, 9.2101, 0.1), // Corso Buenos Aires: people walking
+    cell(45.4988, 9.2192, null), // NoLo: too few classified sessions
+  ])!);
+  const kindOf = (name: string) => zones.peaks.find((peak) => peak.name === name)?.kind;
+  assert(kindOf("Darsena") === "gathering", `Darsena is a gathering, got ${kindOf("Darsena")}`);
+  assert(kindOf("Corso Buenos Aires") === "flow", `Buenos Aires is a flow, got ${kindOf("Corso Buenos Aires")}`);
+  assert(kindOf("NoLo") === "unknown", `NoLo has no signal, got ${kindOf("NoLo")}`);
+});
+
+Deno.test("stationarity: cells without the signal leave every zone unknown", () => {
+  const grid = gridFromScoredPoints([{ latitude: 45.4527, longitude: 9.1791, score: 85, radius: 360 }])!;
+  assert(grid.stationaryShare === undefined, "no stationarity layer without a signal");
+  const zones = buildFocusZones(grid);
+  assert(zones.peaks.length === 1 && zones.peaks[0].kind === "unknown", "zone kind stays unknown");
+  assert(zones.peaks[0].stationaryShare === null, "no invented share");
+});
+
+Deno.test("demo field: aperitivo crowds stay, shopping streets flow", () => {
+  const evening = generateDemoCrowdField(FRIDAY_EVENING);
+  const aperitivo = buildFocusZones(evening.grid, { localHour: evening.localHour });
+  const darsena = aperitivo.peaks.find((peak) => peak.name === "Darsena");
+  assert(darsena?.kind === "gathering", `Darsena at aperitivo is a gathering, got ${darsena?.kind}`);
+
+  // The centre on a Sunday afternoon, zoomed in to a few districts.
+  const detail = FOCUS_DETAIL.district;
+  const bounds = { south: 45.458, north: 45.47, west: 9.181, east: 9.203 };
+  const afternoon = generateDemoCrowdField(new Date("2026-11-01T14:00:00Z"), { bounds, cellSizeMeters: detail.cellSizeMeters });
+  const centre = buildFocusZones(afternoon.grid, { detail, localHour: afternoon.localHour });
+  const viaTorino = centre.peaks.find((peak) => peak.name === "Via Torino");
+  assert(
+    viaTorino?.kind === "flow",
+    `the shopping street is a flow, got ${centre.peaks.map((peak) => `${peak.name}:${peak.kind}`).join(", ")}`,
+  );
 });

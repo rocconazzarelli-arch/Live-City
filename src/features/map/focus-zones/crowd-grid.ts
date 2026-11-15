@@ -35,6 +35,11 @@ export type CrowdGrid = {
   values: Float32Array;
   /** Row-major density scores per activity, 0–100, when the source knows them. */
   layers?: Partial<Record<ZoneActivity, Float32Array>>;
+  /**
+   * Row-major share of people standing still, 0–1, when the source knows it;
+   * NaN in cells without a signal. See gathering-kind.ts.
+   */
+  stationaryShare?: Float32Array;
 };
 
 export type GridBounds = {
@@ -94,8 +99,17 @@ export function distanceMeters(
  * as a dense field. Overlapping cells keep the strongest value, not the sum,
  * because each input score is already a density.
  */
+export type ScoredPoint = {
+  latitude: number;
+  longitude: number;
+  score: number;
+  radius: number;
+  /** Share of stationary sessions in the cell, 0–1, when published. */
+  stationaryShare?: number | null;
+};
+
 export function gridFromScoredPoints(
-  points: readonly { latitude: number; longitude: number; score: number; radius: number }[],
+  points: readonly ScoredPoint[],
   cellSizeMeters = 90,
 ): CrowdGrid | null {
   if (points.length === 0) return null;
@@ -116,21 +130,39 @@ export function gridFromScoredPoints(
     cellSizeMeters,
   );
 
+  const hasStationarity = points.some((point) => isShare(point.stationaryShare));
+  const stationaryShare = hasStationarity ? new Float32Array(grid.rows * grid.cols).fill(Number.NaN) : null;
+
   for (let row = 0; row < grid.rows; row += 1) {
     const latitude = cellLatitude(grid, row);
     for (let col = 0; col < grid.cols; col += 1) {
       const longitude = cellLongitude(grid, col);
       let value = 0;
+      let shareSum = 0;
+      let shareWeight = 0;
       for (const point of points) {
         const sigma = Math.max(point.radius, 1) / 1.6;
         const distance = distanceMeters(latitude, longitude, point.latitude, point.longitude);
         if (distance > sigma * 4) continue;
         const score = Math.min(Math.max(point.score, 0), 100);
-        value = Math.max(value, score * Math.exp(-0.5 * (distance / sigma) ** 2));
+        const contribution = score * Math.exp(-0.5 * (distance / sigma) ** 2);
+        value = Math.max(value, contribution);
+        // Between two cells the share is their average, weighted by how much
+        // of each cell's crowd reaches this point.
+        if (isShare(point.stationaryShare)) {
+          shareSum += point.stationaryShare * contribution;
+          shareWeight += contribution;
+        }
       }
       grid.values[row * grid.cols + col] = value;
+      if (stationaryShare && shareWeight > 0) stationaryShare[row * grid.cols + col] = shareSum / shareWeight;
     }
   }
 
+  if (stationaryShare) grid.stationaryShare = stationaryShare;
   return grid;
+}
+
+function isShare(value: number | null | undefined): value is number {
+  return typeof value === 'number' && value >= 0 && value <= 1;
 }
