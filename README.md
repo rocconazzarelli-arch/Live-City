@@ -106,6 +106,7 @@ Documentazione di riferimento:
 - [`Crowd Engine V1`](docs/crowd-engine-v1.md)
 - [`Strategia Hybrid`](docs/hybrid-crowd-strategy.md)
 - [`Architettura heatmap e geolocalizzazione`](docs/location-heatmap-architecture.md)
+- [`Aggregazioni e flussi di passaggio`](docs/aggregation-vs-flow-v1.md)
 - [`Readiness private beta`](docs/private-beta.md)
 
 ## Stato dei dati
