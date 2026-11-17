@@ -49,7 +49,7 @@
     "typecheck": "tsc --noEmit",
     "test:crowd-engine": "npx --yes deno test tests/crowd-engine.test.ts",
     "test:backend": "npx --yes deno test tests/",
-    "check:edge-functions": "npx --yes deno check supabase/functions/*/index.ts",
+    "check:edge-functions": "npx --yes deno check --node-modules-dir=auto supabase/functions/*/index.ts",
     "check": "npm run typecheck && npm run lint && npm run test:backend && npm run check:edge-functions"
   },
   "private": true
