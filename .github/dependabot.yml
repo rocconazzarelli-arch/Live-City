@@ -1,0 +1,32 @@
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Rome
+    open-pull-requests-limit: 5
+    groups:
+      expo-sdk-patches:
+        patterns:
+          - expo
+          - "expo-*"
+          - "@expo/*"
+        update-types:
+          - patch
+    ignore:
+      - dependency-name: expo
+        update-types:
+          - version-update:semver-major
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:15"
+      timezone: Europe/Rome
+    open-pull-requests-limit: 3

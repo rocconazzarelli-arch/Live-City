@@ -1,0 +1,10 @@
+# Every production change needs review from the other Live City maintainer.
+* @rocconazzarelli-arch @giozamu
+
+# Security-sensitive backend and automation paths.
+/.github/ @rocconazzarelli-arch @giozamu
+/supabase/ @rocconazzarelli-arch @giozamu
+/app.json @rocconazzarelli-arch @giozamu
+/eas.json @rocconazzarelli-arch @giozamu
+/package.json @rocconazzarelli-arch @giozamu
+/package-lock.json @rocconazzarelli-arch @giozamu
