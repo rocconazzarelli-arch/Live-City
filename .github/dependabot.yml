@@ -18,7 +18,27 @@ updates:
         update-types:
           - patch
     ignore:
-      - dependency-name: expo
+      # Expo packages must stay on the SDK 57 major until the application is
+      # deliberately migrated using the matching Expo upgrade guide.
+      - dependency-name: "expo"
+        update-types:
+          - version-update:semver-major
+      - dependency-name: "expo-*"
+        update-types:
+          - version-update:semver-major
+      - dependency-name: "@expo/*"
+        update-types:
+          - version-update:semver-major
+      - dependency-name: "eslint-config-expo"
+        update-types:
+          - version-update:semver-major
+      - dependency-name: "react"
+        update-types:
+          - version-update:semver-major
+      - dependency-name: "react-dom"
+        update-types:
+          - version-update:semver-major
+      - dependency-name: "react-native"
         update-types:
           - version-update:semver-major
 
