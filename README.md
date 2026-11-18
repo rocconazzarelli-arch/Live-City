@@ -114,6 +114,7 @@ Documentazione di riferimento:
 - [`Storico feature e meteo`](docs/feature-history-v1.md)
 - [`Previsioni crowd corrette dal meteo`](docs/weather-adjusted-crowd.md)
 - [`Architettura heatmap e geolocalizzazione`](docs/location-heatmap-architecture.md)
+- [`Aggregazioni e flussi di passaggio`](docs/aggregation-vs-flow-v1.md)
 - [`Readiness private beta`](docs/private-beta.md)
 
 ## Stato dei dati
