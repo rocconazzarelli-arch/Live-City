@@ -164,19 +164,22 @@ order by place_id, local_weekday, local_hour;
 
 ## 8. Configurazione cron della serata di test
 
-Durante la trial il live va letto **solo nella finestra del test**, non ogni 20 min. Script pronto: [`scripts/sql/porta-venezia-test-cron.sql`](../scripts/sql/porta-venezia-test-cron.sql).
+Durante la trial il live va letto **solo quando ogni locale è aperto**, non ogni 20 min. Ogni venue ha la sua finestra in `venue_mappings.live_read_hours` (ore di Roma); `crowd-refresh` legge solo le venue la cui finestra contiene l'ora corrente.
 
-- **Finestra:** venerdì 20:00 → sabato 02:00 (Europe/Rome), 1 lettura/ora = **7 letture**.
-- **Budget:** 7 × 10 venue = 70 live + 20 forecast = **90 crediti** (buffer 10).
-- **Due leve di sicurezza:** (a) solo 10 venue in `venue_mappings`; (b) pipeline 20-min **in pausa**, sostituita dal cron orario della finestra.
-- **Fuso:** pg_cron gira in **UTC** → Rome 20:00–02:00 = UTC `0 19-23 * * 5` + `0 0-1 * * 6`. Se `show timezone;` dà `Europe/Rome`, usa `0 20-23 * * 5` + `0 0-2 * * 6`.
+- **Script:** [`porta-venezia-venue-schedule.sql`](../scripts/sql/porta-venezia-venue-schedule.sql) (orari per venue + controlli di budget) e [`porta-venezia-test-cron.sql`](../scripts/sql/porta-venezia-test-cron.sql) (cron).
+- **Esecuzioni:** venerdì 19:30 → sabato 01:30, alle **:30** di ogni ora = 7 esecuzioni.
+- **Letture per esecuzione:** 12 · 12 · 12 · 12 · 10 · 10 · 7 = **75 live**. Con 13 registrazioni × 2cr = **101 crediti** → oltre i ~100 della trial: togli almeno una lettura.
+- **`forceProvider` obbligatorio:** la pipeline chiama BestTime solo nei primi 5 minuti dell'ora; alle :30 il cron passa `{"forceProvider": true, "forceWeather": true}`.
+- **Guardia di budget:** una venue con `live_read_hours` NULL viene letta a ogni esecuzione. Il controllo nello script deve restituire **0** venue senza orario.
+- **Fuso:** pg_cron gira in **UTC** → `30 18-23 * * 5` + `30 0 * * 6`. Se `show timezone;` dà `Europe/Rome`, usa `30 19-23 * * 5` + `30 0-1 * * 6`.
 
-### Checklist entro le 20:00
-1. 10 forecast creati su BestTime (20cr) → 10 `besttime_venue_id`.
-2. Verificati su Google **Popular Times + orari di apertura** (un locale chiuso consuma 1cr e torna "non disponibile" → scartalo).
-3. Solo le 10 `venue_mappings` inserite (§4).
-4. Eseguito `scripts/sql/porta-venezia-test-cron.sql` nel SQL editor di Supabase.
-5. Dopo le 20:00: verifica `venue_crowd_cache` / `crowd_provider_runs`.
+### Checklist entro le 19:30
+1. Registrate le 13 venue su BestTime (New Forecast, 2cr l'una) → 13 `besttime_venue_id`. Verificate prima su Google **Popular Times + orari di apertura**.
+2. Applicata la migration `202611200019_venue_live_read_hours.sql`.
+3. **Ri-deployata** l'edge function: `supabase functions deploy crowd-refresh`.
+4. Inserite le 13 `venue_mappings` (§4), poi eseguito `porta-venezia-venue-schedule.sql`: controlli = **0** senza orario, **13** venue, **75** letture.
+5. Eseguito `porta-venezia-test-cron.sql`.
+6. Dopo la prima esecuzione (19:30): `crowd_provider_runs` deve mostrare `requested_count = 12` e `metadata.romeHour = 19`.
 
 ### Dopo il test
 Esegui la sezione REVERT dello script. **Non** riattivare la pipeline 20-min finché non sei sul piano a pagamento (crediti trial finiti).
