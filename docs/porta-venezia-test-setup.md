@@ -157,3 +157,26 @@ order by place_id, local_weekday, local_hour;
 ```
 
 **Criterio di uscita del test:** quante delle 10 venue raggiungono righe mature in `crowd_historical_slots` entro 1–2 settimane, e con quale **live-availability** (campioni BestTime reali) → decide se BestTime per voi è "live diffuso" o solo forecast, e quale tier sottoscrivere.
+
+> ⚠️ **Una sola notte NON matura i trend.** 7 letture in una sera = 1 campione per slot (venerdì, ora); la maturità richiede ≥12 campioni / ≥3 giorni. Inoltre 70 letture esauriscono la trial. Questo test valida **live-availability, plausibilità e archiviazione (`crowd_history`)** — i trend arrivano con le settimane sul piano a pagamento.
+
+---
+
+## 8. Configurazione cron della serata di test
+
+Durante la trial il live va letto **solo nella finestra del test**, non ogni 20 min. Script pronto: [`scripts/sql/porta-venezia-test-cron.sql`](../scripts/sql/porta-venezia-test-cron.sql).
+
+- **Finestra:** venerdì 20:00 → sabato 02:00 (Europe/Rome), 1 lettura/ora = **7 letture**.
+- **Budget:** 7 × 10 venue = 70 live + 20 forecast = **90 crediti** (buffer 10).
+- **Due leve di sicurezza:** (a) solo 10 venue in `venue_mappings`; (b) pipeline 20-min **in pausa**, sostituita dal cron orario della finestra.
+- **Fuso:** pg_cron gira in **UTC** → Rome 20:00–02:00 = UTC `0 19-23 * * 5` + `0 0-1 * * 6`. Se `show timezone;` dà `Europe/Rome`, usa `0 20-23 * * 5` + `0 0-2 * * 6`.
+
+### Checklist entro le 20:00
+1. 10 forecast creati su BestTime (20cr) → 10 `besttime_venue_id`.
+2. Verificati su Google **Popular Times + orari di apertura** (un locale chiuso consuma 1cr e torna "non disponibile" → scartalo).
+3. Solo le 10 `venue_mappings` inserite (§4).
+4. Eseguito `scripts/sql/porta-venezia-test-cron.sql` nel SQL editor di Supabase.
+5. Dopo le 20:00: verifica `venue_crowd_cache` / `crowd_provider_runs`.
+
+### Dopo il test
+Esegui la sezione REVERT dello script. **Non** riattivare la pipeline 20-min finché non sei sul piano a pagamento (crediti trial finiti).
