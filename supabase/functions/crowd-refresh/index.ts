@@ -1,7 +1,10 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { BESTTIME_LIVE_URL, normalizeBestTimeLiveScore } from "../_shared/besttime.ts";
+import { isLiveReadDue, normalizeLiveReadHours, romeHour } from "../_shared/live-schedule.ts";
 
-const BESTTIME_LIVE_URL = "https://besttime.app/api/v1/forecasts/live";
 const MAX_VENUES_PER_REFRESH = 100;
+// Upper bound on mapping rows scanned before the per-venue window filter.
+const MAX_MAPPINGS_SCANNED = 1000;
 const REQUEST_TIMEOUT_MS = 12_000;
 const PARALLEL_REQUESTS = 8;
 
@@ -27,6 +30,7 @@ function requiredEnv(name: string): string {
 type MappingRow = {
   besttime_venue_id: string;
   live_priority: number;
+  live_read_hours: unknown;
 };
 
 type BestTimeLiveResponse = {
@@ -41,10 +45,6 @@ type RefreshOutcome =
   | { kind: "live"; venueId: string; score: number }
   | { kind: "unavailable"; venueId: string }
   | { kind: "failed"; venueId: string; reason: string };
-
-function validScore(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100 && value !== 999;
-}
 
 function activityLevel(score: number): "low" | "medium" | "high" | "very_high" {
   if (score >= 75) return "very_high";
@@ -69,13 +69,13 @@ async function fetchLiveVenue(
 
     const payload = await response.json() as BestTimeLiveResponse;
     const available = payload.analysis?.venue_live_busyness_available === true;
-    const score = payload.analysis?.venue_live_busyness;
-    if (payload.status !== "OK" || !available || !validScore(score)) {
+    const score = normalizeBestTimeLiveScore(payload.analysis?.venue_live_busyness);
+    if (payload.status !== "OK" || !available || score === null) {
       // Crucial: forecast fields returned alongside this payload must never be
       // stored as a live observation.
       return { kind: "unavailable", venueId };
     }
-    return { kind: "live", venueId, score: Math.round(score) };
+    return { kind: "live", venueId, score };
   } catch (error) {
     return {
       kind: "failed",
@@ -125,14 +125,22 @@ Deno.serve(async (request) => {
     });
     const { data, error } = await supabase
       .from("venue_mappings")
-      .select("besttime_venue_id, live_priority")
+      .select("besttime_venue_id, live_priority, live_read_hours")
       .not("besttime_venue_id", "is", null)
       .order("live_priority", { ascending: false })
       .order("besttime_venue_id")
-      .limit(limit);
+      .limit(MAX_MAPPINGS_SCANNED);
     if (error) throw new Error(`Venue mapping read failed: ${error.message}`);
 
-    const mappings = (data ?? []) as MappingRow[];
+    // Only venues whose read window contains the current Rome hour are
+    // queried: every BestTime Live call is billed, even for a closed venue.
+    const currentHour = romeHour(new Date(startedAt));
+    const allMappings = (data ?? []) as MappingRow[];
+    const dueMappings = allMappings.filter((mapping) =>
+      isLiveReadDue(normalizeLiveReadHours(mapping.live_read_hours), currentHour)
+    );
+    const mappings = dueMappings.slice(0, limit);
+    const scheduledSkipped = allMappings.length - dueMappings.length;
     const outcomes = await inParallel(mappings, (mapping) => fetchLiveVenue(mapping.besttime_venue_id, apiKey));
     const now = new Date();
     const validUntil = new Date(now.getTime() + 60 * 60 * 1000).toISOString();
@@ -168,6 +176,8 @@ Deno.serve(async (request) => {
       liveWritten: liveRows.length,
       liveUnavailable: outcomes.filter((outcome) => outcome.kind === "unavailable").length,
       providerFailures: outcomes.filter((outcome) => outcome.kind === "failed").length,
+      scheduledSkipped,
+      romeHour: currentHour,
       limit,
       durationMs: Date.now() - startedAt,
     };
@@ -181,7 +191,13 @@ Deno.serve(async (request) => {
       unavailable_count: stats.liveUnavailable,
       failure_count: stats.providerFailures,
       status: runStatus,
-      metadata: { limit: stats.limit, durationMs: stats.durationMs, failureReasons },
+      metadata: {
+        limit: stats.limit,
+        durationMs: stats.durationMs,
+        failureReasons,
+        scheduledSkipped: stats.scheduledSkipped,
+        romeHour: stats.romeHour,
+      },
     });
     // Observability must never discard a valid live refresh. The next run will
     // retry the audit insert after a transient database failure.
