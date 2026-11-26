@@ -3,7 +3,9 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-const APP_HEALTH_URL = 'https://qmskozzidachccwbtejd.supabase.co/functions/v1/app-health';
+import { supabaseFunctionUrl } from '@/lib/supabase-config';
+
+const APP_HEALTH_URL = supabaseFunctionUrl('app-health');
 
 type ProviderRun = {
   requested_count: number;
@@ -75,7 +77,7 @@ export default function ExploreScreen() {
 
   const refreshHealth = async () => {
     const key = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
-    if (!key) {
+    if (!key || !APP_HEALTH_URL) {
       setUnavailable(true);
       setLoading(false);
       return;

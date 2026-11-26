@@ -46,7 +46,7 @@ Un errore del meteo o della scrittura dello storico non blocca il calcolo delle 
 3. Primo caricamento meteo recente (2 giorni passati + 3 di previsione):
 
    ```bash
-   curl -X POST "https://qmskozzidachccwbtejd.supabase.co/functions/v1/weather-ingest" \
+   curl -X POST "https://<SUPABASE_PROJECT_REF>.supabase.co/functions/v1/weather-ingest" \
      -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
      -H "Content-Type: application/json" \
      -d '{"mode":"recent"}'
@@ -57,7 +57,7 @@ Un errore del meteo o della scrittura dello storico non blocca il calcolo delle 
    ```bash
    for range in "2023-01-01 2023-12-31" "2024-01-01 2024-12-31" "2025-01-01 2025-12-31" "2026-01-01 2026-10-15"; do
      set -- $range
-     curl -X POST "https://qmskozzidachccwbtejd.supabase.co/functions/v1/weather-ingest" \
+     curl -X POST "https://<SUPABASE_PROJECT_REF>.supabase.co/functions/v1/weather-ingest" \
        -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
        -H "Content-Type: application/json" \
        -d "{\"mode\":\"backfill\",\"startDate\":\"$1\",\"endDate\":\"$2\"}"

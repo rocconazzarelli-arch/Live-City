@@ -21,6 +21,7 @@ import {
   loadSocialSession,
   type SocialSession,
 } from '@/lib/social-client';
+import { supabaseFunctionUrl } from '@/lib/supabase-config';
 
 /* =========================================================
    TYPES
@@ -212,20 +213,11 @@ const categoryConfig: Record<
    SUPABASE
 ========================================================= */
 
-const SUPABASE_PLACES_READ_URL =
-  'https://qmskozzidachccwbtejd.supabase.co/functions/v1/places-read';
-
-const SUPABASE_EVENTS_READ_URL =
-  'https://qmskozzidachccwbtejd.supabase.co/functions/v1/events-read';
-
-const SUPABASE_EVENTS_CREATE_URL =
-  'https://qmskozzidachccwbtejd.supabase.co/functions/v1/events-create';
-
-const SUPABASE_LOCATION_INGEST_URL =
-  'https://qmskozzidachccwbtejd.supabase.co/functions/v1/location-ingest';
-
-const SUPABASE_AREA_HEATMAP_READ_URL =
-  'https://qmskozzidachccwbtejd.supabase.co/functions/v1/area-heatmap-read';
+const SUPABASE_PLACES_READ_URL = supabaseFunctionUrl('places-read');
+const SUPABASE_EVENTS_READ_URL = supabaseFunctionUrl('events-read');
+const SUPABASE_EVENTS_CREATE_URL = supabaseFunctionUrl('events-create');
+const SUPABASE_LOCATION_INGEST_URL = supabaseFunctionUrl('location-ingest');
+const SUPABASE_AREA_HEATMAP_READ_URL = supabaseFunctionUrl('area-heatmap-read');
 
 /* =========================================================
    MAP
@@ -626,7 +618,7 @@ export function LiveCityMapScreen({
         const supabaseKey =
           process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 
-        if (!supabaseKey) {
+        if (!supabaseKey || !SUPABASE_PLACES_READ_URL) {
           if (!cancelled) setPlacesRefreshUnavailable(true);
 
           return;
@@ -836,7 +828,7 @@ export function LiveCityMapScreen({
         const supabaseKey =
           process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 
-        if (!supabaseKey) {
+        if (!supabaseKey || !SUPABASE_EVENTS_READ_URL) {
           if (!cancelled) setEventsRefreshUnavailable(true);
 
           return;
@@ -1045,7 +1037,7 @@ export function LiveCityMapScreen({
 
     const loadAreaHeatmap = async () => {
       const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
-      if (!supabaseKey) return;
+      if (!supabaseKey || !SUPABASE_AREA_HEATMAP_READ_URL) return;
 
       try {
         const heatmapReadUrl = crowdStrategy === 'hybrid'
@@ -1177,7 +1169,7 @@ export function LiveCityMapScreen({
     }
 
     const session = locationAuthSessionRef.current;
-    if (!session) {
+    if (!session || !SUPABASE_LOCATION_INGEST_URL) {
       setContributionStatus('error');
       return;
     }
@@ -1349,7 +1341,9 @@ export function LiveCityMapScreen({
       const startAt = new Date();
       const endAt = new Date(startAt.getTime() + 3 * 60 * 60 * 1000);
       const key = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
-      if (!key) throw new Error('Configurazione non disponibile');
+      if (!key || !SUPABASE_EVENTS_CREATE_URL) {
+        throw new Error('Configurazione Supabase non disponibile');
+      }
       const response = await fetch(SUPABASE_EVENTS_CREATE_URL, {
         method: 'POST',
         headers: {

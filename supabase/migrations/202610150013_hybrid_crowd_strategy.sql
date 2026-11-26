@@ -188,7 +188,12 @@ begin
     '7,27,47 * * * *',
     $job$
       select net.http_post(
-        url := 'https://qmskozzidachccwbtejd.supabase.co/functions/v1/hybrid-crowd-refresh',
+        url := (
+          select decrypted_secret || '/functions/v1/hybrid-crowd-refresh'
+          from vault.decrypted_secrets
+          where name = 'supabase_project_url'
+          limit 1
+        ),
         headers := jsonb_build_object(
           'Content-Type', 'application/json',
           'x-refresh-secret', (
@@ -213,7 +218,12 @@ begin
     '41 3 * * *',
     $job$
       select net.http_post(
-        url := 'https://qmskozzidachccwbtejd.supabase.co/functions/v1/mobility-source-refresh',
+        url := (
+          select decrypted_secret || '/functions/v1/mobility-source-refresh'
+          from vault.decrypted_secrets
+          where name = 'supabase_project_url'
+          limit 1
+        ),
         headers := jsonb_build_object(
           'Content-Type', 'application/json',
           'x-refresh-secret', (

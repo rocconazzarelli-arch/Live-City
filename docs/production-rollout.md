@@ -8,7 +8,7 @@ Autenticarsi nel progetto Supabase corretto, quindi applicare le migrazioni in o
 
 ```sh
 npx supabase login
-npx supabase link --project-ref qmskozzidachccwbtejd
+npx supabase link --project-ref <SUPABASE_PROJECT_REF>
 npx supabase db push
 npx supabase functions deploy places-read events-read location-ingest area-heatmap-read area-heatmap-refresh app-health
 npx supabase functions deploy crowd-refresh crowd-engine-refresh crowd-pipeline-refresh

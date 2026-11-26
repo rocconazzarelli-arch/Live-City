@@ -1,7 +1,8 @@
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 
-const SUPABASE_URL = 'https://qmskozzidachccwbtejd.supabase.co';
+import { requireSupabaseUrl, SUPABASE_URL } from '@/lib/supabase-config';
+
 const SESSION_STORAGE_KEY = 'live-city.social.session.v1';
 const REQUEST_TIMEOUT_MS = 15_000;
 
@@ -27,6 +28,7 @@ function publicKey() {
 }
 
 function headers(accessToken?: string) {
+  requireSupabaseUrl();
   const key = publicKey();
   return {
     apikey: key,

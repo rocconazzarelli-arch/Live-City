@@ -76,7 +76,12 @@ begin
     '*/20 * * * *',
     $job$
       select net.http_post(
-        url := 'https://qmskozzidachccwbtejd.supabase.co/functions/v1/crowd-pipeline-refresh',
+        url := (
+          select decrypted_secret || '/functions/v1/crowd-pipeline-refresh'
+          from vault.decrypted_secrets
+          where name = 'supabase_project_url'
+          limit 1
+        ),
         headers := jsonb_build_object(
           'Content-Type', 'application/json',
           'x-refresh-secret', (

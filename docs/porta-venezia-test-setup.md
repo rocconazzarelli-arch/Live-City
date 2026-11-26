@@ -30,8 +30,10 @@ L'architettura Supabase **archivia già** i dati BestTime in modo durevole e pro
 
 ## 2. Gap reali rimasti
 
-1. **`venue_mappings` non è creata da nessuna migration del repo.** Esiste solo sul progetto Supabase remoto collegato. Un ambiente pulito/CI non la ricreerebbe → va aggiunta una migration `create table if not exists` ricostruita dallo schema remoto (vedi §6). Non blocca il test sul remoto esistente, ma è un debito da chiudere.
-2. **Nessuna cache del forecast BestTime** (`besttime_forecast_slots`). Oggi il pattern settimanale si costruisce **solo** accumulando il live per settimane. Una cache del forecast darebbe la curva settimanale **da subito** (prior etichettato). È un *miglioramento*, non un blocco. Vedi §7.
+1. **Nessuna cache del forecast BestTime** (`besttime_forecast_slots`). Oggi il pattern settimanale si costruisce **solo** accumulando il live per settimane. Una cache del forecast darebbe la curva settimanale **da subito** (prior etichettato). È un *miglioramento*, non un blocco. Vedi §7.
+2. Il progetto staging deve essere creato e configurato seguendo
+   [`supabase-staging-test.md`](./supabase-staging-test.md). Lo schema di base,
+   inclusa `venue_mappings`, è ora riproducibile tramite migration.
 
 ---
 
@@ -44,7 +46,7 @@ Questo endpoint non crea forecast e non legge dati live.
 
 ```bash
 curl -sS -X POST \
-  'https://qmskozzidachccwbtejd.supabase.co/functions/v1/besttime-register' \
+  'https://<NUOVO_PROJECT_REF>.supabase.co/functions/v1/besttime-register' \
   -H 'Content-Type: application/json' \
   -H 'x-refresh-secret: <CROWD_PIPELINE_SECRET>' \
   --data '{"action":"validate-key"}'
@@ -89,7 +91,8 @@ Se non c'è, fatelo comparire eseguendo `places-discover` sull'area (o inseritel
 
 ## 5. Registrazione controllata e mapping
 
-> ⚠️ `venue_mappings` non è nel repo: **prima ispezionate lo schema reale** per conoscere colonne obbligatorie e chiave di conflitto.
+> Lo schema di `venue_mappings` è versionato nella migration fondamentale. È
+> comunque utile ispezionarlo prima dell'inserimento per evitare errori manuali.
 
 ```sql
 -- 0) Schema reale della tabella
@@ -116,7 +119,7 @@ values
   ('<FSQ_PLACE_ID_10>', '<BESTTIME_VENUE_ID_10>', 90, 'matched'),
   ('<FSQ_PLACE_ID_11>', '<BESTTIME_VENUE_ID_11>', 90, 'matched'),
   ('<FSQ_PLACE_ID_12>', '<BESTTIME_VENUE_ID_12>', 90, 'matched')
-on conflict (<chiave_reale>) do update       -- es. (fsq_place_id) — confermate con lo step 0
+on conflict (fsq_place_id) do update
   set besttime_venue_id = excluded.besttime_venue_id,
       live_priority     = excluded.live_priority,
       match_status      = excluded.match_status;
@@ -140,15 +143,11 @@ numero di venue nel batch. Esempio per un batch da 8: `confirmedMaxCredits: 16`;
 per il secondo batch da 4: `confirmedMaxCredits: 8`. Questo rende esplicito il
 massimo consumo prima di ogni chiamata pagata.
 
-## 6. (Debito) Migration per `venue_mappings`
+## 6. Schema riproducibile
 
-Per chiudere il gap di riproducibilità, va committata una `create table if not exists public.venue_mappings (...)` **identica allo schema remoto**. Il modo sicuro è generarla dal remoto collegato:
-
-```bash
-supabase db pull
-```
-
-(oppure `supabase db dump --schema public` e isolare la sezione `venue_mappings`). Così la definizione autentica entra nelle migration senza indovinare colonne/vincoli.
+La migration `202609210000_foundation_schema.sql` crea le tabelle fondamentali
+che il primo prototipo aveva creato manualmente, inclusa `venue_mappings`. Un
+progetto Supabase vuoto può quindi essere ricostruito con `supabase db push`.
 
 ---
 
