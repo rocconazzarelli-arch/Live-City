@@ -21,16 +21,16 @@ Deno.test("romeHour follows CET in winter and CEST in summer", () => {
   assertEquals(romeHour(new Date("2026-07-01T17:30:00Z")), 19, "Jul 17:30Z is 19:30 CEST");
 });
 
-Deno.test("normalizeLiveReadHours keeps null and never widens a malformed window", () => {
-  assertEquals(normalizeLiveReadHours(null), null, "null keeps legacy behaviour");
-  assertEquals(normalizeLiveReadHours(undefined), null, "undefined keeps legacy behaviour");
+Deno.test("normalizeLiveReadHours fails closed and never widens a malformed window", () => {
+  assertEquals(normalizeLiveReadHours(null), [], "null disables paid reads");
+  assertEquals(normalizeLiveReadHours(undefined), [], "undefined disables paid reads");
   assertEquals(normalizeLiveReadHours([23, 19, 19, 0]), [0, 19, 23], "dedup + sort");
   assertEquals(normalizeLiveReadHours([19, 24, -1, 2.5, "x"]), [19], "invalid entries dropped");
   assertEquals(normalizeLiveReadHours("19"), [], "non-array disables reads");
 });
 
-Deno.test("isLiveReadDue reads unscheduled venues always and scheduled ones only in window", () => {
-  assert(isLiveReadDue(null, 4), "null schedule is always due");
+Deno.test("isLiveReadDue reads only explicitly scheduled venues", () => {
+  assert(!isLiveReadDue(null, 4), "null schedule is never due");
   assert(!isLiveReadDue([], 19), "empty schedule is never due");
   assert(isLiveReadDue([19, 20], 20), "hour inside window");
   assert(!isLiveReadDue([19, 20], 21), "hour outside window");
@@ -49,7 +49,6 @@ const PORTA_VENEZIA_PLAN: Record<string, number[]> = {
   "Eroica Caffè": [19, 20, 21, 22, 23, 0],
   "Bar Picchio": [19, 20, 21, 22, 23],
   "Da Oscar": [19, 20, 21, 22],
-  "Bottega del Pane": [19, 20, 21, 22],
   "Meydan Istanbul": [0, 1],
 };
 
@@ -64,7 +63,7 @@ const CRON_RUNS_UTC = [
   "2026-11-21T00:30:00Z",
 ];
 
-Deno.test("Porta Venezia plan: the seven cron runs make exactly 75 live calls", () => {
+Deno.test("Porta Venezia plan: the seven cron runs make exactly 71 live calls", () => {
   const perRun = CRON_RUNS_UTC.map((instant) => {
     const hour = romeHour(new Date(instant));
     return Object.entries(PORTA_VENEZIA_PLAN)
@@ -72,9 +71,9 @@ Deno.test("Porta Venezia plan: the seven cron runs make exactly 75 live calls", 
       .map(([name]) => name);
   });
 
-  assertEquals(perRun.map((venues) => venues.length), [12, 12, 12, 12, 10, 10, 7], "venues per run");
+  assertEquals(perRun.map((venues) => venues.length), [11, 11, 11, 11, 10, 10, 7], "venues per run");
   const total = perRun.reduce((sum, venues) => sum + venues.length, 0);
-  assertEquals(total, 75, "total live calls");
+  assertEquals(total, 71, "total live calls");
 
   assert(!perRun[0].includes("Meydan Istanbul"), "Meydan is not read at 19:30");
   assert(perRun[5].includes("Meydan Istanbul"), "Meydan is read at 00:30");

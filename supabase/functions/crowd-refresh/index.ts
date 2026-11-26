@@ -1,7 +1,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { BESTTIME_LIVE_URL, normalizeBestTimeLiveScore } from "../_shared/besttime.ts";
 import { isLiveReadDue, normalizeLiveReadHours, romeHour } from "../_shared/live-schedule.ts";
 
-const BESTTIME_LIVE_URL = "https://besttime.app/api/v1/forecasts/live";
 const MAX_VENUES_PER_REFRESH = 100;
 // Upper bound on mapping rows scanned before the per-venue window filter.
 const MAX_MAPPINGS_SCANNED = 1000;
@@ -46,10 +46,6 @@ type RefreshOutcome =
   | { kind: "unavailable"; venueId: string }
   | { kind: "failed"; venueId: string; reason: string };
 
-function validScore(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100 && value !== 999;
-}
-
 function activityLevel(score: number): "low" | "medium" | "high" | "very_high" {
   if (score >= 75) return "very_high";
   if (score >= 50) return "high";
@@ -73,13 +69,13 @@ async function fetchLiveVenue(
 
     const payload = await response.json() as BestTimeLiveResponse;
     const available = payload.analysis?.venue_live_busyness_available === true;
-    const score = payload.analysis?.venue_live_busyness;
-    if (payload.status !== "OK" || !available || !validScore(score)) {
+    const score = normalizeBestTimeLiveScore(payload.analysis?.venue_live_busyness);
+    if (payload.status !== "OK" || !available || score === null) {
       // Crucial: forecast fields returned alongside this payload must never be
       // stored as a live observation.
       return { kind: "unavailable", venueId };
     }
-    return { kind: "live", venueId, score: Math.round(score) };
+    return { kind: "live", venueId, score };
   } catch (error) {
     return {
       kind: "failed",

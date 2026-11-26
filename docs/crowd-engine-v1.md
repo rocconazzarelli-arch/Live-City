@@ -59,7 +59,7 @@ During rollout, only a usable `observation_mode = 'live'` row from `venue_crowd_
 
 ## BestTime Live adapter
 
-`crowd-refresh` calls `POST https://besttime.app/api/v1/forecasts/live` server-side with an existing `venue_id`. It accepts a score only when `analysis.venue_live_busyness_available = true` and writes that row with `observation_mode = 'live'` and a one-hour expiry. The related forecast value is deliberately discarded.
+`crowd-refresh` calls `POST https://besttime.app/api/v1/forecasts/live` server-side with an existing `venue_id`. It accepts a score only when `analysis.venue_live_busyness_available = true`, saturates exceptional values above 100 to LIVE CITY's 0–100 scale, and writes that row with `observation_mode = 'live'` and a one-hour expiry. The related forecast value is deliberately discarded.
 
 The function requires `BESTTIME_PRIVATE_API_KEY` only in Supabase Edge Function secrets; it must never be copied into Expo variables or the client. It accepts only service-role calls from `crowd-pipeline-refresh`, enforces a limit of 100 venue requests, and reads the highest `venue_mappings.live_priority` rows first.
 

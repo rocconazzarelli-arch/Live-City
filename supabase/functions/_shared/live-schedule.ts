@@ -2,8 +2,9 @@
 //
 // `venue_mappings.live_read_hours` lists the local Europe/Rome clock hours
 // (0-23) in which a venue may be queried. A refresh that runs at 19:30 Rome
-// time belongs to hour 19. `null` keeps the historical behaviour: the venue is
-// eligible on every refresh. An empty list means the venue is never read.
+// time belongs to hour 19. Missing, null, malformed, and empty schedules all
+// fail closed: the venue is never read. This prevents an incomplete mapping
+// from consuming paid BestTime calls.
 // Every live call costs a BestTime credit, even for a closed venue, so the
 // window should match the hours in which the venue is actually open.
 
@@ -26,12 +27,11 @@ export function romeHour(date: Date): number {
 }
 
 /**
- * Sanitises a database value into a list of valid hours, or `null` when the
- * venue has no schedule. Invalid entries are dropped rather than widening the
+ * Sanitises a database value into a list of valid hours. Invalid entries are
+ * dropped rather than widening the
  * window, so a malformed row can never cause extra (paid) live calls.
  */
-export function normalizeLiveReadHours(value: unknown): number[] | null {
-  if (value === null || value === undefined) return null;
+export function normalizeLiveReadHours(value: unknown): number[] {
   if (!Array.isArray(value)) return [];
   const hours = value
     .map((entry) => Number(entry))
@@ -41,6 +41,6 @@ export function normalizeLiveReadHours(value: unknown): number[] | null {
 
 /** Whether a venue with this schedule should be read in the given hour. */
 export function isLiveReadDue(hours: readonly number[] | null, hour: number): boolean {
-  if (hours === null) return true;
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23 || !Array.isArray(hours)) return false;
   return hours.includes(hour);
 }

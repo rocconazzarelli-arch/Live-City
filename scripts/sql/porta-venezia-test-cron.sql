@@ -5,7 +5,7 @@
 -- sabato 01:30 (Europe/Rome) = 7 esecuzioni. In ogni esecuzione crowd-refresh
 -- legge SOLO le venue il cui `live_read_hours` contiene l'ora corrente di Roma
 -- (vedi scripts/sql/porta-venezia-venue-schedule.sql). Con il piano attuale:
--- 12+12+12+12+10+10+7 = 75 chiamate live.
+-- 11+11+11+11+10+10+7 = 71 chiamate live.
 --
 -- IMPORTANTE: la pipeline chiama BestTime solo nei primi 5 minuti dell'ora,
 -- a meno che non riceva {"forceProvider": true}. Alle :30 il flag è
@@ -18,12 +18,65 @@
 --   Se `show timezone;` restituisce 'Europe/Rome', usa gli schedule "ROME:".
 --
 -- PREREQUISITI (prima delle 19:30):
---   1) Migration 202611200019_venue_live_read_hours.sql applicata.
+--   1) Migration 202611260020_venue_live_read_hours_fail_closed.sql applicata.
 --   2) Edge function crowd-refresh ri-deployata (legge live_read_hours).
 --   3) venue_mappings + orari impostati con porta-venezia-venue-schedule.sql,
---      e i suoi controlli di budget superati.
+--      e i suoi controlli di budget superati: 12 venue / 71 live.
 -- Eseguire nel SQL editor di Supabase.
+-- Prima dell'esecuzione sostituire <TEST_FRIDAY_YYYY-MM-DD> con la data locale
+-- del venerdì scelto (es. 2026-11-27). La data guard impedisce chiamate nelle
+-- settimane successive anche se i job non vengono rimossi subito.
 -- =============================================================================
+
+-- STEP 0 — Guardia bloccante. Mostra il budget e interrompe lo script se la
+-- configurazione non è esattamente quella approvata.
+with hourly as (
+  select hour, count(*)::int as venues
+  from public.venue_mappings, unnest(live_read_hours) as hour
+  where besttime_venue_id is not null
+  group by hour
+), budget as (
+  select
+    count(*) filter (where cardinality(live_read_hours) > 0)::int as scheduled_venues,
+    coalesce(sum(cardinality(live_read_hours)), 0)::int as planned_live_reads
+  from public.venue_mappings
+  where besttime_venue_id is not null
+)
+select scheduled_venues, planned_live_reads, 24 as forecast_credits,
+       planned_live_reads + 24 as maximum_total_credits,
+       (select jsonb_object_agg(hour, venues) from hourly) as reads_by_rome_hour
+from budget;
+
+do $$
+declare
+  scheduled_count int;
+  live_count int;
+  hourly_plan jsonb;
+begin
+  select count(*) filter (where cardinality(live_read_hours) > 0)::int,
+         coalesce(sum(cardinality(live_read_hours)), 0)::int
+  into scheduled_count, live_count
+  from public.venue_mappings
+  where besttime_venue_id is not null;
+
+  select jsonb_object_agg(hour, venues)
+  into hourly_plan
+  from (
+    select hour, count(*)::int as venues
+    from public.venue_mappings, unnest(live_read_hours) as hour
+    where besttime_venue_id is not null
+    group by hour
+  ) h;
+
+  if scheduled_count <> 12 or live_count <> 71 then
+    raise exception 'Budget guard failed: expected 12 venues / 71 live, got % / %',
+      scheduled_count, live_count;
+  end if;
+  if hourly_plan <> '{"0":10,"1":7,"19":11,"20":11,"21":11,"22":11,"23":10}'::jsonb then
+    raise exception 'Hourly budget guard failed: %', hourly_plan;
+  end if;
+end;
+$$;
 
 -- STEP 1 — Pausa della pipeline continua e pulizia di eventuali job di test.
 do $$
@@ -57,6 +110,10 @@ select cron.schedule('live-city-test-friday', '30 18-23 * * 5', $job$
     ),
     body := '{"forceProvider": true, "forceWeather": true}'::jsonb,
     timeout_milliseconds := 140000
+  )
+  where (now() at time zone 'Europe/Rome')::date in (
+    date '<TEST_FRIDAY_YYYY-MM-DD>',
+    date '<TEST_FRIDAY_YYYY-MM-DD>' + 1
   );
 $job$);
 
@@ -74,7 +131,9 @@ select cron.schedule('live-city-test-saturday', '30 0 * * 6', $job$
     ),
     body := '{"forceProvider": true, "forceWeather": true}'::jsonb,
     timeout_milliseconds := 140000
-  );
+  )
+  where (now() at time zone 'Europe/Rome')::date =
+    date '<TEST_FRIDAY_YYYY-MM-DD>' + 1;
 $job$);
 
 -- VERIFICA — fuso e job attivi.
