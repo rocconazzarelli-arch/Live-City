@@ -5,7 +5,7 @@
 -- sabato 01:30 (Europe/Rome) = 7 esecuzioni. In ogni esecuzione crowd-refresh
 -- legge SOLO le venue il cui `live_read_hours` contiene l'ora corrente di Roma
 -- (vedi scripts/sql/porta-venezia-venue-schedule.sql). Con il piano attuale:
--- 11+11+11+11+10+10+7 = 71 chiamate live.
+-- 10+10+10+10+9+8+6 = 63 chiamate live.
 --
 -- IMPORTANTE: la pipeline chiama BestTime solo nei primi 5 minuti dell'ora,
 -- a meno che non riceva {"forceProvider": true}. Alle :30 il flag è
@@ -21,7 +21,7 @@
 --   1) Migration 202611260020_venue_live_read_hours_fail_closed.sql applicata.
 --   2) Edge function crowd-refresh ri-deployata (legge live_read_hours).
 --   3) venue_mappings + orari impostati con porta-venezia-venue-schedule.sql,
---      e i suoi controlli di budget superati: 12 venue / 71 live.
+--      e i suoi controlli di budget superati: 10 venue / 63 live.
 --   4) Vault secret `supabase_project_url` impostato all'URL DEL PROGETTO
 --      STAGING (es. https://<project-ref>.supabase.co, senza slash finale).
 -- Eseguire nel SQL editor di Supabase.
@@ -44,8 +44,8 @@ with hourly as (
   from public.venue_mappings
   where besttime_venue_id is not null
 )
-select scheduled_venues, planned_live_reads, 24 as forecast_credits,
-       planned_live_reads + 24 as maximum_total_credits,
+select scheduled_venues, planned_live_reads, 20 as forecast_credits,
+       planned_live_reads + 20 as maximum_total_credits,
        (select jsonb_object_agg(hour, venues) from hourly) as reads_by_rome_hour
 from budget;
 
@@ -80,11 +80,11 @@ begin
     group by hour
   ) h;
 
-  if scheduled_count <> 12 or live_count <> 71 then
-    raise exception 'Budget guard failed: expected 12 venues / 71 live, got % / %',
+  if scheduled_count <> 10 or live_count <> 63 then
+    raise exception 'Budget guard failed: expected 10 venues / 63 live, got % / %',
       scheduled_count, live_count;
   end if;
-  if hourly_plan <> '{"0":10,"1":7,"19":11,"20":11,"21":11,"22":11,"23":10}'::jsonb then
+  if hourly_plan <> '{"0":8,"1":6,"19":10,"20":10,"21":10,"22":10,"23":9}'::jsonb then
     raise exception 'Hourly budget guard failed: %', hourly_plan;
   end if;
 end;

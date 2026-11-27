@@ -28,7 +28,7 @@ In alternativa, dopo aver creato il progetto, eseguire lo script guidato:
 
 Lo script crea `.env`, genera i secret tecnici, applica le migration, pubblica
 le funzioni, popola il catalogo OpenStreetMap ed esegue il preflight BestTime.
-La registrazione a pagamento delle 12 venue resta volutamente manuale.
+La registrazione a pagamento delle 10 venue resta volutamente manuale.
 
 ## 2. Secret server-side
 
@@ -44,8 +44,8 @@ npx supabase secrets set \
 ```
 
 `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY` sono forniti automaticamente alle
-Edge Functions. La chiave BestTime deve avere almeno **95 crediti disponibili**
-per il piano approvato (24 forecast + 71 live).
+Edge Functions. La chiave BestTime deve avere almeno **83 crediti disponibili**
+per il piano approvato (20 forecast + 63 live).
 
 Nel SQL Editor salvare inoltre gli URL/segreti usati da pg_cron nel Vault:
 
@@ -109,19 +109,19 @@ o `test-friday/test-saturday` prima dell'attivazione controllata.
 Seguire nell'ordine:
 
 1. `scripts/sql/porta-venezia-catalog-and-mappings.sql`
-2. registrazione BestTime in due batch 8 + 4
+2. registrazione BestTime in due batch 8 + 2
 3. `scripts/sql/porta-venezia-venue-schedule.sql`
 4. `scripts/sql/porta-venezia-test-cron.sql`, sostituendo la data del venerdì
 
-La guardia SQL deve mostrare esattamente **12 venue, 71 live, 95 crediti
+La guardia SQL deve mostrare esattamente **10 venue, 63 live, 83 crediti
 massimi**. Al termine, rimuovere i due cron di test come indicato nello script.
 
 ## Dati che restano da fornire
 
 - project ref e publishable key del nuovo progetto Supabase;
 - accesso Owner/Admin al progetto per migration, secrets e deploy;
-- chiave privata BestTime valida con almeno 95 crediti (inserita direttamente
+- chiave privata BestTime valida con almeno 83 crediti (inserita direttamente
   nei Supabase secrets, non condivisa in chat);
 - chiave pubblica Foursquare per popolare il catalogo;
 - data e finestra oraria definitiva del test;
-- conferma dei 12 locali e relativi match BestTime prima delle chiamate pagate.
+- conferma dei 10 locali e relativi match BestTime prima delle chiamate pagate.

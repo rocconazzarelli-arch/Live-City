@@ -1,14 +1,14 @@
-# Test BestTime · Porta Venezia (12 venue) — Setup & Readiness
+# Test BestTime · Porta Venezia (10 venue) — Setup & Readiness
 
-Runbook controllato per avviare il test su 12 locali di Porta Venezia con un
-budget massimo di **95 crediti**: 24 per i 12 New Forecast e 71 per le letture
-Live. **Bottega del Pane è esclusa.**
+Runbook controllato per avviare il test su 10 locali di Porta Venezia con un
+budget massimo di **83 crediti**: 20 per i 10 New Forecast e 63 per le letture
+Live.
 
-> Aggiornato: 2026-11-26 · Contesto: piano BestTime metered, 12 venue.
+> Aggiornato: 2026-11-27 · Contesto: piano BestTime metered, 10 venue.
 
 > **Blocco di sicurezza:** non registrare venue e non attivare cron finché la
 > validazione della chiave non restituisce `ok=true`, `valid=true`,
-> `active=true` e i controlli SQL non mostrano 12 venue / 71 live / 95 totali.
+> `active=true` e i controlli SQL non mostrano 10 venue / 63 live / 83 totali.
 
 ---
 
@@ -62,18 +62,33 @@ Se il risultato è diverso, fermarsi: non effettuare New Forecast, Live o Venue
 Search. La chiave privata deve essere salvata solo come secret
 `BESTTIME_PRIVATE_API_KEY` nella funzione Supabase.
 
-## 4. Procedimento per le 12 venue
+## 4. Procedimento per le 10 venue
 
 Per ogni locale scelto servono due identificatori legati tra loro in `venue_mappings`:
 - un **place** nel vostro catalogo (`places.fsq_place_id`),
 - il **`besttime_venue_id`** del locale su BestTime.
 
-**Step 1 — Usa i 12 locali approvati** elencati in
+**Step 1 — Usa i 10 locali approvati** elencati in
 `scripts/sql/porta-venezia-catalog-and-mappings.sql`.
 
 **Step 2 — Ricavate il `besttime_venue_id`** con `besttime-register`, in due
-batch controllati da 8 e 4 locali. Non usare Venue Search: può avviare forecast
+batch controllati da 8 e 2 locali. Non usare Venue Search: può avviare forecast
 aggiuntivi e rendere meno prevedibile il consumo.
+
+Elenco approvato per il test del 27 novembre 2026:
+
+| Locale | Indirizzo di riferimento | Categoria | Letture (ora di Roma) |
+| --- | --- | --- | --- |
+| Love | Via Melzo 5 | nightlife | 19–01 |
+| Rainbow Café Milano | Via Alessandro Tadino 6 | nightlife | 19–01 |
+| Red Café | Via Lecco 5 | aperitivo | 19–01 |
+| Nura | Via Melzo 21 | aperitivo | 19–01 |
+| Magutt | Via Lambro 11 | aperitivo | 19–01 |
+| Brolo Milano - Orto con cucina | Via Melzo 19 | food | 19–01 |
+| Malpighi 8 | Via Marcello Malpighi 8 | aperitivo | 19–00 |
+| Eppol | Via Marcello Malpighi 7 | food | 19–00 |
+| Bar Picchio | Via Melzo 11 | aperitivo | 19–23 |
+| Ristorante Da Oscar (Porta Venezia) | Via Lazzaro Palazzi 4 | food | 19–22 |
 
 **Step 3 — Verificate che il place esista** nel catalogo:
 ```sql
@@ -103,7 +118,7 @@ order by ordinal_position;
 ```
 
 ```sql
--- 1) Inserimento delle 12 venue (riempite gli ID restituiti da BestTime)
+-- 1) Inserimento delle 10 venue (riempite gli ID restituiti da BestTime)
 --    live_priority: 0–100, più alto = aggiornato prima nel refresh live.
 insert into public.venue_mappings (fsq_place_id, besttime_venue_id, live_priority, match_status)
 values
@@ -116,9 +131,7 @@ values
   ('<FSQ_PLACE_ID_07>', '<BESTTIME_VENUE_ID_07>', 90, 'matched'),
   ('<FSQ_PLACE_ID_08>', '<BESTTIME_VENUE_ID_08>', 90, 'matched'),
   ('<FSQ_PLACE_ID_09>', '<BESTTIME_VENUE_ID_09>', 90, 'matched'),
-  ('<FSQ_PLACE_ID_10>', '<BESTTIME_VENUE_ID_10>', 90, 'matched'),
-  ('<FSQ_PLACE_ID_11>', '<BESTTIME_VENUE_ID_11>', 90, 'matched'),
-  ('<FSQ_PLACE_ID_12>', '<BESTTIME_VENUE_ID_12>', 90, 'matched')
+  ('<FSQ_PLACE_ID_10>', '<BESTTIME_VENUE_ID_10>', 90, 'matched')
 on conflict (fsq_place_id) do update
   set besttime_venue_id = excluded.besttime_venue_id,
       live_priority     = excluded.live_priority,
@@ -128,7 +141,7 @@ on conflict (fsq_place_id) do update
 > Note:
 > - `match_status`: usate il valore già in uso sulle righe esistenti (probabilmente `'matched'`/`'manual'`) — verificatelo con `select distinct match_status from public.venue_mappings;`.
 > - Se lo schema ha altre colonne NOT NULL, aggiungetele all'insert (lo step 0 le elenca).
-> - Con 12 venue siete ben sotto il limite tecnico di 100 per refresh; il limite economico resta la guardia 71/95.
+> - Con 10 venue siete ben sotto il limite tecnico di 100 per refresh; il limite economico resta la guardia 63/83.
 
 ---
 
@@ -140,7 +153,7 @@ può comunque costarne 1, quindi non automatizzare retry ciechi.
 La funzione rifiuta una registrazione se non riceve sia
 `"action":"register-venues"` sia `confirmedMaxCredits` uguale a due volte il
 numero di venue nel batch. Esempio per un batch da 8: `confirmedMaxCredits: 16`;
-per il secondo batch da 4: `confirmedMaxCredits: 8`. Questo rende esplicito il
+per il secondo batch da 2: `confirmedMaxCredits: 4`. Questo rende esplicito il
 massimo consumo prima di ogni chiamata pagata.
 
 ## 6. Schema riproducibile
@@ -160,7 +173,7 @@ Oggi i trend emergono solo dopo settimane di accumulo live. Aggiungendo `besttim
 ## 8. Verifica (dopo l'inserimento)
 
 ```sql
--- Le 12 mappe sono presenti, pianificate e prioritizzate?
+-- Le 10 mappe sono presenti, pianificate e prioritizzate?
 select fsq_place_id, besttime_venue_id, live_priority, match_status
 from public.venue_mappings
 order by live_priority desc nulls last;
@@ -201,7 +214,7 @@ where sample_count >= 12 and distinct_days >= 3
 order by place_id, local_weekday, local_hour;
 ```
 
-**Criterio di uscita del test:** quante delle 12 venue forniscono Live verificato,
+**Criterio di uscita del test:** quante delle 10 venue forniscono Live verificato,
 con quale disponibilità per ora e quante osservazioni vengono archiviate. Una
 sola serata non basta a validare il modello settimanale.
 
@@ -215,18 +228,18 @@ Durante la trial il live va letto **solo quando ogni locale è aperto**, non ogn
 
 - **Script:** [`porta-venezia-venue-schedule.sql`](../scripts/sql/porta-venezia-venue-schedule.sql) (orari per venue + controlli di budget) e [`porta-venezia-test-cron.sql`](../scripts/sql/porta-venezia-test-cron.sql) (cron).
 - **Esecuzioni:** venerdì 19:30 → sabato 01:30, alle **:30** di ogni ora = 7 esecuzioni.
-- **Letture per esecuzione:** 11 · 11 · 11 · 11 · 10 · 10 · 7 = **71 live**. Con 12 registrazioni × 2 crediti = **95 crediti massimi**.
+- **Letture per esecuzione:** 10 · 10 · 10 · 10 · 9 · 8 · 6 = **63 live**. Con 10 registrazioni × 2 crediti = **83 crediti massimi**.
 - **`forceProvider` obbligatorio:** la pipeline chiama BestTime solo nei primi 5 minuti dell'ora; alle :30 il cron passa `{"forceProvider": true, "forceWeather": true}`.
 - **Guardia di budget:** NULL, valori malformati e array vuoti falliscono chiusi; il controllo deve restituire **0** venue senza orario.
 - **Fuso:** pg_cron gira in **UTC** → `30 18-23 * * 5` + `30 0 * * 6`. Se `show timezone;` dà `Europe/Rome`, usa `30 19-23 * * 5` + `30 0-1 * * 6`.
 
 ### Checklist entro le 19:30
 1. Validata la chiave con `{"action":"validate-key"}`; nessuna chiamata pagata eseguita prima dell'esito positivo.
-2. Confermato a schermo il budget: **12 venue, 71 live, 24 forecast, 95 totale**.
-3. Registrate le 12 venue su BestTime (New Forecast, massimo 2 crediti l'una) → 12 `besttime_venue_id`; verificati nome, indirizzo e coordinate restituiti.
+2. Confermato a schermo il budget: **10 venue, 63 live, 20 forecast, 83 totale**.
+3. Registrate le 10 venue su BestTime (New Forecast, massimo 2 crediti l'una) → 10 `besttime_venue_id`; verificati nome, indirizzo e coordinate restituiti.
 4. Applicata la migration `202611260020_venue_live_read_hours_fail_closed.sql`.
 5. **Ri-deployate** `besttime-register` e `crowd-refresh`.
-6. Inserite le 12 `venue_mappings`, poi eseguito `porta-venezia-venue-schedule.sql`: controlli = **0** senza orario, **12** venue, **71** letture.
+6. Inserite le 10 `venue_mappings`, poi eseguito `porta-venezia-venue-schedule.sql`: controlli = **0** senza orario, **10** venue, **63** letture.
 7. Solo ora eseguito `porta-venezia-test-cron.sql`.
 8. Dopo la prima esecuzione (19:30): `crowd_provider_runs` deve mostrare `requested_count = 11` e `metadata.romeHour = 19`.
 

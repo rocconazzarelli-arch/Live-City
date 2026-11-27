@@ -39,31 +39,29 @@ Deno.test("isLiveReadDue reads only explicitly scheduled venues", () => {
 // The Porta Venezia test plan (Friday night), as Rome clock hours of each read.
 const PORTA_VENEZIA_PLAN: Record<string, number[]> = {
   "Love": [19, 20, 21, 22, 23, 0, 1],
-  "Rainbow Café": [19, 20, 21, 22, 23, 0, 1],
+  "Rainbow Café Milano": [19, 20, 21, 22, 23, 0, 1],
   "Red Café": [19, 20, 21, 22, 23, 0, 1],
-  "Eppol Pie": [19, 20, 21, 22, 23, 0, 1],
   "Nura": [19, 20, 21, 22, 23, 0, 1],
   "Magutt": [19, 20, 21, 22, 23, 0, 1],
+  "Brolo Milano - Orto con cucina": [19, 20, 21, 22, 23, 0, 1],
   "Malpighi 8": [19, 20, 21, 22, 23, 0],
   "Eppol": [19, 20, 21, 22, 23, 0],
-  "Eroica Caffè": [19, 20, 21, 22, 23, 0],
   "Bar Picchio": [19, 20, 21, 22, 23],
-  "Da Oscar": [19, 20, 21, 22],
-  "Meydan Istanbul": [0, 1],
+  "Ristorante Da Oscar (Porta Venezia)": [19, 20, 21, 22],
 };
 
 // UTC instants of the cron runs: '30 18-23 * * 5' + '30 0 * * 6' (CET).
 const CRON_RUNS_UTC = [
-  "2026-11-20T18:30:00Z",
-  "2026-11-20T19:30:00Z",
-  "2026-11-20T20:30:00Z",
-  "2026-11-20T21:30:00Z",
-  "2026-11-20T22:30:00Z",
-  "2026-11-20T23:30:00Z",
-  "2026-11-21T00:30:00Z",
+  "2026-11-27T18:30:00Z",
+  "2026-11-27T19:30:00Z",
+  "2026-11-27T20:30:00Z",
+  "2026-11-27T21:30:00Z",
+  "2026-11-27T22:30:00Z",
+  "2026-11-27T23:30:00Z",
+  "2026-11-28T00:30:00Z",
 ];
 
-Deno.test("Porta Venezia plan: the seven cron runs make exactly 71 live calls", () => {
+Deno.test("Porta Venezia plan: the seven cron runs make exactly 63 live calls", () => {
   const perRun = CRON_RUNS_UTC.map((instant) => {
     const hour = romeHour(new Date(instant));
     return Object.entries(PORTA_VENEZIA_PLAN)
@@ -71,12 +69,11 @@ Deno.test("Porta Venezia plan: the seven cron runs make exactly 71 live calls", 
       .map(([name]) => name);
   });
 
-  assertEquals(perRun.map((venues) => venues.length), [11, 11, 11, 11, 10, 10, 7], "venues per run");
+  assertEquals(perRun.map((venues) => venues.length), [10, 10, 10, 10, 9, 8, 6], "venues per run");
   const total = perRun.reduce((sum, venues) => sum + venues.length, 0);
-  assertEquals(total, 71, "total live calls");
+  assertEquals(total, 63, "total live calls");
 
-  assert(!perRun[0].includes("Meydan Istanbul"), "Meydan is not read at 19:30");
-  assert(perRun[5].includes("Meydan Istanbul"), "Meydan is read at 00:30");
-  assert(!perRun[4].includes("Da Oscar"), "Da Oscar is not read at 23:30");
+  assert(perRun[6].includes("Brolo Milano - Orto con cucina"), "Brolo is read at 01:30");
+  assert(!perRun[4].includes("Ristorante Da Oscar (Porta Venezia)"), "Da Oscar is not read at 23:30");
   assert(!perRun[6].includes("Malpighi 8"), "Malpighi 8 is not read at 01:30");
 });

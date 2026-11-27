@@ -1,7 +1,7 @@
 -- =============================================================================
 -- LIVE CITY · Test Porta Venezia — catalogo + mappings + orari (in un colpo)
 -- =============================================================================
--- I 12 locali del test non sono nel catalogo `places` (verificato il
+-- I 10 locali del test non sono nel catalogo `places` (verificato il
 -- 2026-11-20: a Porta Venezia c'erano solo 16 place, nessuno di questi).
 -- Questo script li aggiunge al catalogo con i dati della registrazione BestTime
 -- (stessa venue di cui misuriamo il live) e crea i relativi venue_mappings con
@@ -13,31 +13,29 @@
 --
 -- Riempi id, indirizzo matchato e coordinate dalla risposta BestTime. Se anche
 -- un solo placeholder o coordinata non valida resta presente, ready_venues è
--- vuota e lo script non inserisce nessuna delle 12 righe.
+-- vuota e lo script non inserisce nessuna delle 10 righe.
 -- devono essere una tra: aperitivo, food, nightlife, outdoor, culture.
 -- Rieseguibile: aggiorna le righe esistenti invece di duplicarle.
 -- =============================================================================
 
 with test_venues (besttime_venue_id, name, address, latitude, longitude, category, live_read_hours) as (
   values
-    ('<ID_LOVE>',            'Love',            'Via Melzo 5, Milano',              0.0, 0.0, 'nightlife', '{19,20,21,22,23,0,1}'::smallint[]),
-    ('<ID_RAINBOW_CAFE>',    'Rainbow Café',    'Via Alessandro Tadino 6, Milano',  0.0, 0.0, 'nightlife', '{19,20,21,22,23,0,1}'::smallint[]),
-    ('<ID_RED_CAFE>',        'Red Café',        'Via Lecco 5, Milano',              0.0, 0.0, 'aperitivo', '{19,20,21,22,23,0,1}'::smallint[]),
-    ('<ID_EPPOL_PIE>',       'Eppol Pie',       'Via Lecco 4, Milano',              0.0, 0.0, 'food',      '{19,20,21,22,23,0,1}'::smallint[]),
-    ('<ID_NURA>',            'Nura',            'Via Melzo 21, Milano',             0.0, 0.0, 'aperitivo', '{19,20,21,22,23,0,1}'::smallint[]),
-    ('<ID_MAGUTT>',          'Magutt',          'Via Lambro 11, Milano',            0.0, 0.0, 'aperitivo', '{19,20,21,22,23,0,1}'::smallint[]),
-    ('<ID_MALPIGHI_8>',      'Malpighi 8',      'Via Marcello Malpighi 8, Milano',  0.0, 0.0, 'aperitivo', '{19,20,21,22,23,0}'::smallint[]),
-    ('<ID_EPPOL>',           'Eppol',           'Via Marcello Malpighi 7, Milano',  0.0, 0.0, 'food',      '{19,20,21,22,23,0}'::smallint[]),
-    ('<ID_EROICA_CAFFE>',    'Eroica Caffè',    'Viale Tunisia 15, Milano',         0.0, 0.0, 'aperitivo', '{19,20,21,22,23,0}'::smallint[]),
-    ('<ID_BAR_PICCHIO>',     'Bar Picchio',     'Via Melzo 11, Milano',             0.0, 0.0, 'aperitivo', '{19,20,21,22,23}'::smallint[]),
-    ('<ID_DA_OSCAR>',        'Da Oscar',        'Via Lazzaro Palazzi 4, Milano',    0.0, 0.0, 'food',      '{19,20,21,22}'::smallint[]),
-    ('<ID_MEYDAN_ISTANBUL>', 'Meydan Istanbul', 'Via Lazzaro Palazzi 2, Milano',    0.0, 0.0, 'food',      '{0,1}'::smallint[])
+    ('<ID_LOVE>',         'Love',                                  'Via Melzo 5, Milano',              0.0, 0.0, 'nightlife', '{19,20,21,22,23,0,1}'::smallint[]),
+    ('<ID_RAINBOW_CAFE>', 'Rainbow Café Milano',                    'Via Alessandro Tadino 6, Milano',  0.0, 0.0, 'nightlife', '{19,20,21,22,23,0,1}'::smallint[]),
+    ('<ID_RED_CAFE>',     'Red Café',                               'Via Lecco 5, Milano',              0.0, 0.0, 'aperitivo', '{19,20,21,22,23,0,1}'::smallint[]),
+    ('<ID_NURA>',         'Nura',                                   'Via Melzo 21, Milano',             0.0, 0.0, 'aperitivo', '{19,20,21,22,23,0,1}'::smallint[]),
+    ('<ID_MAGUTT>',       'Magutt',                                 'Via Lambro 11, Milano',            0.0, 0.0, 'aperitivo', '{19,20,21,22,23,0,1}'::smallint[]),
+    ('<ID_BROLO>',        'Brolo Milano - Orto con cucina',         'Via Melzo 19, Milano',             0.0, 0.0, 'food',      '{19,20,21,22,23,0,1}'::smallint[]),
+    ('<ID_MALPIGHI_8>',   'Malpighi 8',                             'Via Marcello Malpighi 8, Milano',  0.0, 0.0, 'aperitivo', '{19,20,21,22,23,0}'::smallint[]),
+    ('<ID_EPPOL>',        'Eppol',                                  'Via Marcello Malpighi 7, Milano',  0.0, 0.0, 'food',      '{19,20,21,22,23,0}'::smallint[]),
+    ('<ID_BAR_PICCHIO>',  'Bar Picchio',                            'Via Melzo 11, Milano',             0.0, 0.0, 'aperitivo', '{19,20,21,22,23}'::smallint[]),
+    ('<ID_DA_OSCAR>',     'Ristorante Da Oscar (Porta Venezia)',    'Via Lazzaro Palazzi 4, Milano',    0.0, 0.0, 'food',      '{19,20,21,22}'::smallint[])
 ),
 ready_venues as (
   select v.*
   from test_venues v
   cross join (
-    select count(*) = 12
+    select count(*) = 10
       and bool_and(besttime_venue_id not like '<%')
       and bool_and(latitude between 45.0 and 46.0)
       and bool_and(longitude between 9.0 and 10.0) as ready
@@ -80,7 +78,7 @@ on conflict (fsq_place_id) do update
       updated_at = now();
 
 -- CONTROLLI (prima di attivare il cron)
--- Atteso: senza_orario = 0, venue_in_programma = 12, letture_pianificate = 71.
+-- Atteso: senza_orario = 0, venue_in_programma = 10, letture_pianificate = 63.
 select
   count(*) filter (where live_read_hours is null) as senza_orario,
   count(*) filter (where cardinality(live_read_hours) > 0) as venue_in_programma,
