@@ -18,7 +18,8 @@
 --   Se `show timezone;` restituisce 'Europe/Rome', usa gli schedule "ROME:".
 --
 -- PREREQUISITI (prima delle 19:30):
---   1) Migration 202611260020_venue_live_read_hours_fail_closed.sql applicata.
+--   1) Migration 202611260020_venue_live_read_hours_fail_closed.sql e
+--      202611270022_besttime_per_venue_credit_guard.sql applicate.
 --   2) Edge function crowd-refresh ri-deployata (legge live_read_hours).
 --   3) venue_mappings + orari impostati con porta-venezia-venue-schedule.sql,
 --      e i suoi controlli di budget superati: 10 venue / 63 live.
@@ -36,6 +37,7 @@ with hourly as (
   select hour, count(*)::int as venues
   from public.venue_mappings, unnest(live_read_hours) as hour
   where besttime_venue_id is not null
+    and live_availability_status in ('pending', 'confirmed')
   group by hour
 ), budget as (
   select
@@ -43,6 +45,7 @@ with hourly as (
     coalesce(sum(cardinality(live_read_hours)), 0)::int as planned_live_reads
   from public.venue_mappings
   where besttime_venue_id is not null
+    and live_availability_status in ('pending', 'confirmed')
 )
 select scheduled_venues, planned_live_reads, 20 as forecast_credits,
        planned_live_reads + 20 as maximum_total_credits,
@@ -69,7 +72,8 @@ begin
          coalesce(sum(cardinality(live_read_hours)), 0)::int
   into scheduled_count, live_count
   from public.venue_mappings
-  where besttime_venue_id is not null;
+  where besttime_venue_id is not null
+    and live_availability_status in ('pending', 'confirmed');
 
   select jsonb_object_agg(hour, venues)
   into hourly_plan
@@ -77,6 +81,7 @@ begin
     select hour, count(*)::int as venues
     from public.venue_mappings, unnest(live_read_hours) as hour
     where besttime_venue_id is not null
+      and live_availability_status in ('pending', 'confirmed')
     group by hour
   ) h;
 

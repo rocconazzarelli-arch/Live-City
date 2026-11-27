@@ -63,10 +63,11 @@ upserted_places as (
 )
 insert into public.venue_mappings (
   fsq_place_id, fsq_name, besttime_venue_id, besttime_name,
-  match_status, live_priority, live_read_hours
+  match_status, live_priority, live_read_hours, live_availability_status,
+  live_suspended_at, live_suspension_reason
 )
 select 'besttime:' || v.besttime_venue_id, v.name, v.besttime_venue_id, v.name,
-       'matched', 100, v.live_read_hours
+       'matched', 100, v.live_read_hours, 'pending', null, null
 from ready_venues v
 join upserted_places p on p.fsq_place_id = 'besttime:' || v.besttime_venue_id
 on conflict (fsq_place_id) do update
@@ -75,6 +76,9 @@ on conflict (fsq_place_id) do update
       match_status = 'matched',
       live_priority = excluded.live_priority,
       live_read_hours = excluded.live_read_hours,
+      live_availability_status = 'pending',
+      live_suspended_at = null,
+      live_suspension_reason = null,
       updated_at = now();
 
 -- CONTROLLI (prima di attivare il cron)
@@ -84,4 +88,5 @@ select
   count(*) filter (where cardinality(live_read_hours) > 0) as venue_in_programma,
   coalesce(sum(cardinality(live_read_hours)), 0) as letture_pianificate
 from public.venue_mappings
-where besttime_venue_id is not null;
+where besttime_venue_id is not null
+  and live_availability_status in ('pending', 'confirmed');

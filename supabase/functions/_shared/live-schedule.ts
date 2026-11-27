@@ -10,6 +10,8 @@
 
 export const LIVE_SCHEDULE_TIME_ZONE = "Europe/Rome";
 
+export type LiveAvailabilityStatus = "pending" | "confirmed" | "suspended";
+
 const hourFormatter = new Intl.DateTimeFormat("en-GB", {
   timeZone: LIVE_SCHEDULE_TIME_ZONE,
   hour: "2-digit",
@@ -18,7 +20,9 @@ const hourFormatter = new Intl.DateTimeFormat("en-GB", {
 
 /** Local Europe/Rome clock hour (0-23) for an instant. */
 export function romeHour(date: Date): number {
-  const hourPart = hourFormatter.formatToParts(date).find((part) => part.type === "hour");
+  const hourPart = hourFormatter.formatToParts(date).find((part) =>
+    part.type === "hour"
+  );
   const hour = Number(hourPart?.value);
   if (!Number.isInteger(hour) || hour < 0 || hour > 23) {
     throw new Error(`Unable to resolve ${LIVE_SCHEDULE_TIME_ZONE} hour`);
@@ -40,7 +44,23 @@ export function normalizeLiveReadHours(value: unknown): number[] {
 }
 
 /** Whether a venue with this schedule should be read in the given hour. */
-export function isLiveReadDue(hours: readonly number[] | null, hour: number): boolean {
-  if (!Number.isInteger(hour) || hour < 0 || hour > 23 || !Array.isArray(hours)) return false;
+export function isLiveReadDue(
+  hours: readonly number[] | null,
+  hour: number,
+): boolean {
+  if (
+    !Number.isInteger(hour) || hour < 0 || hour > 23 || !Array.isArray(hours)
+  ) return false;
   return hours.includes(hour);
+}
+
+/**
+ * Only venues that have not been tested yet, or that have already returned a
+ * valid live observation, may consume another BestTime Live credit. Unknown
+ * and malformed states fail closed.
+ */
+export function isLiveAvailabilityEligible(
+  value: unknown,
+): value is Exclude<LiveAvailabilityStatus, "suspended"> {
+  return value === "pending" || value === "confirmed";
 }

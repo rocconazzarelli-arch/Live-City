@@ -1,4 +1,5 @@
 import {
+  isLiveAvailabilityEligible,
   isLiveReadDue,
   normalizeLiveReadHours,
   romeHour,
@@ -15,17 +16,45 @@ function assertEquals<T>(actual: T, expected: T, message: string): void {
 }
 
 Deno.test("romeHour follows CET in winter and CEST in summer", () => {
-  assertEquals(romeHour(new Date("2026-11-20T18:30:00Z")), 19, "Nov 18:30Z is 19:30 CET");
-  assertEquals(romeHour(new Date("2026-11-20T23:30:00Z")), 0, "Nov 23:30Z is 00:30 CET");
-  assertEquals(romeHour(new Date("2026-11-21T00:30:00Z")), 1, "Nov 00:30Z is 01:30 CET");
-  assertEquals(romeHour(new Date("2026-07-01T17:30:00Z")), 19, "Jul 17:30Z is 19:30 CEST");
+  assertEquals(
+    romeHour(new Date("2026-11-20T18:30:00Z")),
+    19,
+    "Nov 18:30Z is 19:30 CET",
+  );
+  assertEquals(
+    romeHour(new Date("2026-11-20T23:30:00Z")),
+    0,
+    "Nov 23:30Z is 00:30 CET",
+  );
+  assertEquals(
+    romeHour(new Date("2026-11-21T00:30:00Z")),
+    1,
+    "Nov 00:30Z is 01:30 CET",
+  );
+  assertEquals(
+    romeHour(new Date("2026-07-01T17:30:00Z")),
+    19,
+    "Jul 17:30Z is 19:30 CEST",
+  );
 });
 
 Deno.test("normalizeLiveReadHours fails closed and never widens a malformed window", () => {
   assertEquals(normalizeLiveReadHours(null), [], "null disables paid reads");
-  assertEquals(normalizeLiveReadHours(undefined), [], "undefined disables paid reads");
-  assertEquals(normalizeLiveReadHours([23, 19, 19, 0]), [0, 19, 23], "dedup + sort");
-  assertEquals(normalizeLiveReadHours([19, 24, -1, 2.5, "x"]), [19], "invalid entries dropped");
+  assertEquals(
+    normalizeLiveReadHours(undefined),
+    [],
+    "undefined disables paid reads",
+  );
+  assertEquals(
+    normalizeLiveReadHours([23, 19, 19, 0]),
+    [0, 19, 23],
+    "dedup + sort",
+  );
+  assertEquals(
+    normalizeLiveReadHours([19, 24, -1, 2.5, "x"]),
+    [19],
+    "invalid entries dropped",
+  );
   assertEquals(normalizeLiveReadHours("19"), [], "non-array disables reads");
 });
 
@@ -34,6 +63,23 @@ Deno.test("isLiveReadDue reads only explicitly scheduled venues", () => {
   assert(!isLiveReadDue([], 19), "empty schedule is never due");
   assert(isLiveReadDue([19, 20], 20), "hour inside window");
   assert(!isLiveReadDue([19, 20], 21), "hour outside window");
+});
+
+Deno.test("per-venue credit guard fails closed after live becomes unavailable", () => {
+  assert(
+    isLiveAvailabilityEligible("pending"),
+    "an untested venue gets one probe",
+  );
+  assert(
+    isLiveAvailabilityEligible("confirmed"),
+    "a proven live venue stays eligible",
+  );
+  assert(
+    !isLiveAvailabilityEligible("suspended"),
+    "an unavailable venue consumes no more credits",
+  );
+  assert(!isLiveAvailabilityEligible(null), "missing status fails closed");
+  assert(!isLiveAvailabilityEligible("unknown"), "unknown status fails closed");
 });
 
 // The Porta Venezia test plan (Friday night), as Rome clock hours of each read.
@@ -69,11 +115,21 @@ Deno.test("Porta Venezia plan: the seven cron runs make exactly 63 live calls", 
       .map(([name]) => name);
   });
 
-  assertEquals(perRun.map((venues) => venues.length), [10, 10, 10, 10, 9, 8, 6], "venues per run");
+  assertEquals(
+    perRun.map((venues) => venues.length),
+    [10, 10, 10, 10, 9, 8, 6],
+    "venues per run",
+  );
   const total = perRun.reduce((sum, venues) => sum + venues.length, 0);
   assertEquals(total, 63, "total live calls");
 
-  assert(perRun[6].includes("Brolo Milano - Orto con cucina"), "Brolo is read at 01:30");
-  assert(!perRun[4].includes("Ristorante Da Oscar (Porta Venezia)"), "Da Oscar is not read at 23:30");
+  assert(
+    perRun[6].includes("Brolo Milano - Orto con cucina"),
+    "Brolo is read at 01:30",
+  );
+  assert(
+    !perRun[4].includes("Ristorante Da Oscar (Porta Venezia)"),
+    "Da Oscar is not read at 23:30",
+  );
   assert(!perRun[6].includes("Malpighi 8"), "Malpighi 8 is not read at 01:30");
 });

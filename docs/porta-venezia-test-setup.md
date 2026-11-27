@@ -2,13 +2,20 @@
 
 Runbook controllato per avviare il test su 10 locali di Porta Venezia con un
 budget massimo di **83 crediti**: 20 per i 10 New Forecast e 63 per le letture
-Live.
+Live. Le 63 letture sono un tetto iniziale: dopo il primo esito live non
+disponibile, quella venue viene sospesa e il consumo effettivo diminuisce.
 
 > Aggiornato: 2026-11-27 · Contesto: piano BestTime metered, 10 venue.
 
 > **Blocco di sicurezza:** non registrare venue e non attivare cron finché la
 > validazione della chiave non restituisce `ok=true`, `valid=true`,
 > `active=true` e i controlli SQL non mostrano 10 venue / 63 live / 83 totali.
+
+> **Guardia per marker:** `crowd-refresh` effettua al massimo una prima prova su
+> una venue `pending`. Un risultato live valido la porta a `confirmed`; una
+> risposta BestTime valida ma senza dato live la porta a `suspended`. Le venue
+> sospese non vengono più interrogate fino a un reset manuale. Timeout, HTTP
+> 429, chiave/quota e altri errori globali non sospendono singoli marker.
 
 ---
 
@@ -237,9 +244,35 @@ Durante la trial il live va letto **solo quando ogni locale è aperto**, non ogn
 1. Validata la chiave con `{"action":"validate-key"}`; nessuna chiamata pagata eseguita prima dell'esito positivo.
 2. Confermato a schermo il budget: **10 venue, 63 live, 20 forecast, 83 totale**.
 3. Registrate le 10 venue su BestTime (New Forecast, massimo 2 crediti l'una) → 10 `besttime_venue_id`; verificati nome, indirizzo e coordinate restituiti.
-4. Applicata la migration `202611260020_venue_live_read_hours_fail_closed.sql`.
+4. Applicate le migration `202611260020_venue_live_read_hours_fail_closed.sql`
+   e `202611270022_besttime_per_venue_credit_guard.sql`.
 5. **Ri-deployate** `besttime-register` e `crowd-refresh`.
 6. Inserite le 10 `venue_mappings`, poi eseguito `porta-venezia-venue-schedule.sql`: controlli = **0** senza orario, **10** venue, **63** letture.
+
+### Controllo e riattivazione manuale
+
+Durante il test, controllare quali marker sono stati esclusi:
+
+```sql
+select besttime_name, live_availability_status, live_suspended_at,
+       live_suspension_reason
+from public.venue_mappings
+where besttime_venue_id is not null
+order by live_availability_status, besttime_name;
+```
+
+BestTime specifica che l'assenza di live può dipendere dal momento della
+giornata. Per riprovare una venue in un test futuro serve quindi una scelta
+esplicita, mai un retry automatico:
+
+```sql
+update public.venue_mappings
+set live_availability_status = 'pending',
+    live_suspended_at = null,
+    live_suspension_reason = null,
+    updated_at = now()
+where besttime_venue_id = '<BESTTIME_VENUE_ID_DA_RIATTIVARE>';
+```
 7. Solo ora eseguito `porta-venezia-test-cron.sql`.
 8. Dopo la prima esecuzione (19:30): `crowd_provider_runs` deve mostrare `requested_count = 11` e `metadata.romeHour = 19`.
 

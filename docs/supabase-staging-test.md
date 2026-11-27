@@ -114,7 +114,9 @@ Seguire nell'ordine:
 4. `scripts/sql/porta-venezia-test-cron.sql`, sostituendo la data del venerdì
 
 La guardia SQL deve mostrare esattamente **10 venue, 63 live, 83 crediti
-massimi**. Al termine, rimuovere i due cron di test come indicato nello script.
+massimi**. È un tetto: una venue che restituisce live non disponibile passa a
+`suspended` e viene esclusa dalle esecuzioni successive. Al termine, rimuovere
+i due cron di test come indicato nello script.
 
 ## Dati che restano da fornire
 
