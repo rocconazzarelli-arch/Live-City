@@ -20,6 +20,16 @@ npx supabase db push --remote
 Il dry-run deve partire da `202609210000_foundation_schema.sql` e terminare con
 `202611270021_staging_safe_defaults.sql`.
 
+In alternativa, dopo aver creato il progetto, eseguire lo script guidato:
+
+```bash
+./scripts/bootstrap-staging-test.sh
+```
+
+Lo script crea `.env`, genera i secret tecnici, applica le migration, pubblica
+le funzioni, popola il catalogo OpenStreetMap ed esegue il preflight BestTime.
+La registrazione a pagamento delle 12 venue resta volutamente manuale.
+
 ## 2. Secret server-side
 
 Generare due valori casuali diversi (almeno 32 byte) e impostare i secret senza

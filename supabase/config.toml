@@ -1,5 +1,8 @@
 project_id = "live-city-staging"
 
+[functions.besttime-register]
+verify_jwt = false
+
 [functions.crowd-engine-refresh]
 verify_jwt = false
 
