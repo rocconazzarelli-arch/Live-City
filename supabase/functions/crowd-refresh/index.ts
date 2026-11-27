@@ -5,7 +5,7 @@ import {
 } from "../_shared/besttime.ts";
 import {
   isLiveAvailabilityEligible,
-  isLiveReadDue,
+  isLiveReadDueAt,
   normalizeLiveReadHours,
   romeHour,
 } from "../_shared/live-schedule.ts";
@@ -43,6 +43,8 @@ type MappingRow = {
   besttime_venue_id: string;
   live_priority: number;
   live_read_hours: unknown;
+  live_read_from: unknown;
+  live_read_until: unknown;
   live_availability_status: unknown;
 };
 
@@ -148,7 +150,7 @@ Deno.serve(async (request) => {
     const { data, error } = await supabase
       .from("venue_mappings")
       .select(
-        "besttime_venue_id, live_priority, live_read_hours, live_availability_status",
+        "besttime_venue_id, live_priority, live_read_hours, live_read_from, live_read_until, live_availability_status",
       )
       .not("besttime_venue_id", "is", null)
       .order("live_priority", { ascending: false })
@@ -158,15 +160,18 @@ Deno.serve(async (request) => {
 
     // Only venues whose read window contains the current Rome hour are
     // queried: every BestTime Live call is billed, even for a closed venue.
-    const currentHour = romeHour(new Date(startedAt));
+    const currentInstant = new Date(startedAt);
+    const currentHour = romeHour(currentInstant);
     const allMappings = (data ?? []) as MappingRow[];
     const eligibleMappings = allMappings.filter((mapping) =>
       isLiveAvailabilityEligible(mapping.live_availability_status)
     );
     const dueMappings = eligibleMappings.filter((mapping) =>
-      isLiveReadDue(
+      isLiveReadDueAt(
         normalizeLiveReadHours(mapping.live_read_hours),
-        currentHour,
+        currentInstant,
+        mapping.live_read_from,
+        mapping.live_read_until,
       )
     );
     const mappings = dueMappings.slice(0, limit);

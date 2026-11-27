@@ -102,7 +102,7 @@ order by jobname;
 ```
 
 Non devono comparire i job `crowd-pipeline`, `hybrid-crowd`, `mobility-source`
-o `test-friday/test-saturday` prima dell'attivazione controllata.
+o `test-friday/test-saturday/test-sunday-citylife` prima dell'attivazione controllata.
 
 ## 6. Attivazione del test
 
@@ -112,9 +112,13 @@ Seguire nell'ordine:
 2. registrazione BestTime in due batch 8 + 2
 3. `scripts/sql/porta-venezia-venue-schedule.sql`
 4. `scripts/sql/porta-venezia-test-cron.sql`, sostituendo la data del venerdì
+5. Per l'estensione domenicale, registrare separatamente California Bakery e
+   usare `scripts/sql/citylife-sunday-test.sql` solo dopo aver sostituito il
+   BestTime venue id verificato.
 
 La guardia SQL deve mostrare esattamente **10 venue, 63 live, 83 crediti
-massimi**. È un tetto: una venue che restituisce live non disponibile passa a
+massimi** per Porta Venezia. L'estensione CityLife aggiunge al massimo 5
+crediti, portando il tetto combinato a **88**. È un tetto: una venue che restituisce live non disponibile passa a
 `suspended` e viene esclusa dalle esecuzioni successive. Al termine, rimuovere
 i due cron di test come indicato nello script.
 
@@ -122,8 +126,9 @@ i due cron di test come indicato nello script.
 
 - project ref e publishable key del nuovo progetto Supabase;
 - accesso Owner/Admin al progetto per migration, secrets e deploy;
-- chiave privata BestTime valida con almeno 83 crediti (inserita direttamente
+- chiave privata BestTime valida con almeno 88 crediti per entrambi i test (inserita direttamente
   nei Supabase secrets, non condivisa in chat);
 - chiave pubblica Foursquare per popolare il catalogo;
 - data e finestra oraria definitiva del test;
-- conferma dei 10 locali e relativi match BestTime prima delle chiamate pagate.
+- conferma dei 10 locali di Porta Venezia e del marker California Bakery,
+  con relativi match BestTime prima delle chiamate pagate.

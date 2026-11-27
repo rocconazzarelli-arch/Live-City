@@ -1,6 +1,7 @@
 import {
   isLiveAvailabilityEligible,
   isLiveReadDue,
+  isLiveReadDueAt,
   normalizeLiveReadHours,
   romeHour,
 } from "../supabase/functions/_shared/live-schedule.ts";
@@ -63,6 +64,35 @@ Deno.test("isLiveReadDue reads only explicitly scheduled venues", () => {
   assert(!isLiveReadDue([], 19), "empty schedule is never due");
   assert(isLiveReadDue([19, 20], 20), "hour inside window");
   assert(!isLiveReadDue([19, 20], 21), "hour outside window");
+});
+
+Deno.test("absolute live window isolates the Sunday CityLife test", () => {
+  const from = "2026-11-29T07:00:00Z"; // 08:00 Europe/Rome
+  const until = "2026-11-29T10:00:00Z"; // 11:00 Europe/Rome
+  assert(
+    isLiveReadDueAt([8, 9, 10], new Date("2026-11-29T07:30:00Z"), from, until),
+    "08:30 Rome is inside the approved window",
+  );
+  assert(
+    isLiveReadDueAt([8, 9, 10], new Date("2026-11-29T09:30:00Z"), from, until),
+    "10:30 Rome is inside the approved window",
+  );
+  assert(
+    !isLiveReadDueAt([8, 9, 10], new Date("2026-11-29T06:59:59Z"), from, until),
+    "before 08:00 Rome is blocked",
+  );
+  assert(
+    !isLiveReadDueAt([8, 9, 10], new Date("2026-11-29T10:00:00Z"), from, until),
+    "11:00 Rome is the exclusive end",
+  );
+  assert(
+    !isLiveReadDueAt([8], new Date("2026-11-29T07:30:00Z"), from, null),
+    "a partial window fails closed",
+  );
+  assert(
+    isLiveReadDueAt([8], new Date("2026-11-29T07:30:00Z"), null, null),
+    "legacy schedules without bounds remain valid",
+  );
 });
 
 Deno.test("per-venue credit guard fails closed after live becomes unavailable", () => {
@@ -132,4 +162,20 @@ Deno.test("Porta Venezia plan: the seven cron runs make exactly 63 live calls", 
     "Da Oscar is not read at 23:30",
   );
   assert(!perRun[6].includes("Malpighi 8"), "Malpighi 8 is not read at 01:30");
+});
+
+Deno.test("CityLife Sunday plan adds exactly three bounded live calls", () => {
+  const from = "2026-11-29T07:00:00Z";
+  const until = "2026-11-29T10:00:00Z";
+  const runs = [
+    "2026-11-29T07:30:00Z",
+    "2026-11-29T08:30:00Z",
+    "2026-11-29T09:30:00Z",
+  ];
+  const due = runs.filter((instant) =>
+    isLiveReadDueAt([8, 9, 10], new Date(instant), from, until)
+  );
+  assertEquals(due.length, 3, "Sunday CityLife live calls");
+  assertEquals(63 + due.length, 66, "combined live calls");
+  assertEquals(22 + 66, 88, "maximum combined registration + live credits");
 });

@@ -54,6 +54,36 @@ export function isLiveReadDue(
   return hours.includes(hour);
 }
 
+function optionalInstant(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string") return Number.NaN;
+  const instant = Date.parse(value);
+  return Number.isFinite(instant) ? instant : Number.NaN;
+}
+
+/**
+ * Applies both the recurring Rome-hour schedule and an optional absolute
+ * [from, until) window. A partial or malformed absolute window fails closed.
+ */
+export function isLiveReadDueAt(
+  hours: readonly number[] | null,
+  at: Date,
+  readFrom: unknown,
+  readUntil: unknown,
+): boolean {
+  if (Number.isNaN(at.getTime())) return false;
+  if (!isLiveReadDue(hours, romeHour(at))) return false;
+
+  const from = optionalInstant(readFrom);
+  const until = optionalInstant(readUntil);
+  if (from === null && until === null) return true;
+  if (from === null || until === null || Number.isNaN(from) || Number.isNaN(until)) {
+    return false;
+  }
+  const instant = at.getTime();
+  return until > from && instant >= from && instant < until;
+}
+
 /**
  * Only venues that have not been tested yet, or that have already returned a
  * valid live observation, may consume another BestTime Live credit. Unknown

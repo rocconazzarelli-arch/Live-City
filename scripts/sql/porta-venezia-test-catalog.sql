@@ -1,4 +1,5 @@
--- Seed only the 10 venues selected for the 2026-11-27 Porta Venezia test.
+-- Seed the venues selected for the 2026-11-27 Porta Venezia test plus the
+-- isolated 2026-11-29 CityLife morning marker.
 -- This is provider-neutral: BestTime mappings are added separately after a
 -- verified registration, so running this file never consumes provider credit.
 
@@ -23,7 +24,8 @@ values
   ('test:porta-venezia:malpighi-8', 'porta-venezia:malpighi-8', 'Malpighi 8', 'Via Marcello Malpighi 8, Milano', 'aperitivo', 45.4746967, 9.2077298, 'manual_test', true),
   ('test:porta-venezia:eppol', 'porta-venezia:eppol', 'Eppol', 'Via Marcello Malpighi 7, Milano', 'food', 45.4748734, 9.2076783, 'manual_test', true),
   ('test:porta-venezia:bar-picchio', 'porta-venezia:bar-picchio', 'Bar Picchio', 'Via Melzo 11, Milano', 'aperitivo', 45.4735746, 9.2092768, 'manual_test', true),
-  ('test:porta-venezia:da-oscar', 'porta-venezia:da-oscar', 'Ristorante Da Oscar (Porta Venezia)', 'Via Lazzaro Palazzi 4, Milano', 'food', 45.4764399, 9.2059654, 'manual_test', true)
+  ('test:porta-venezia:da-oscar', 'porta-venezia:da-oscar', 'Ristorante Da Oscar (Porta Venezia)', 'Via Lazzaro Palazzi 4, Milano', 'food', 45.4764399, 9.2059654, 'manual_test', true),
+  ('test:citylife:california-bakery', 'citylife:california-bakery', 'California Bakery CityLife', 'Piazza Tre Torri, 20145 Milano MI', 'food', 45.4780925, 9.1570683, 'manual_test', true)
 on conflict (fsq_place_id) do update
 set name = excluded.name,
     address = excluded.address,

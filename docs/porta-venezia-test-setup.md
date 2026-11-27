@@ -274,10 +274,28 @@ set live_availability_status = 'pending',
 where besttime_venue_id = '<BESTTIME_VENUE_ID_DA_RIATTIVARE>';
 ```
 7. Solo ora eseguito `porta-venezia-test-cron.sql`.
-8. Dopo la prima esecuzione (19:30): `crowd_provider_runs` deve mostrare `requested_count = 11` e `metadata.romeHour = 19`.
+8. Dopo la prima esecuzione (19:30): `crowd_provider_runs` deve mostrare `requested_count = 10` e `metadata.romeHour = 19`.
 
 Nel file cron va sostituito `<TEST_FRIDAY_YYYY-MM-DD>` con la data locale della
 serata scelta. La guardia rende i job inerti fuori da quella singola notte.
 
 ### Dopo il test
 Esegui la sezione REVERT dello script. **Non** riattivare la pipeline 20-min finché non sei sul piano a pagamento (crediti trial finiti).
+
+## 10. Estensione CityLife · domenica 29 novembre 2026
+
+Il marker **California Bakery CityLife**, Piazza Tre Torri, è separato dal
+test serale. La sua finestra è **08:00–11:00 Europe/Rome** e produce al massimo
+tre letture: 08:30, 09:30 e 10:30.
+
+- Catalogo: `test:citylife:california-bakery`.
+- Coordinate catalogo: 45.4780925, 9.1570683.
+- Script controllato: [`citylife-sunday-test.sql`](../scripts/sql/citylife-sunday-test.sql).
+- Guardia applicativa: ore `{8,9,10}` più intervallo assoluto
+  `[2026-11-29 08:00+01, 2026-11-29 11:00+01)`.
+- Budget aggiuntivo massimo: 2 crediti di registrazione + 3 live = **5**.
+- Budget combinato massimo: 22 forecast + 66 live = **88 crediti**.
+
+Il cron domenicale non va attivato finché il BestTime venue id non è stato
+verificato. Il placeholder nello script causa intenzionalmente un errore; il
+job viene inoltre reso inerte dalla data guard dopo il 29 novembre.
